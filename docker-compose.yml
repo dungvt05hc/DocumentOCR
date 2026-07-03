@@ -1,0 +1,51 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: document_ocr_db
+    environment:
+      POSTGRES_DB: document_ocr
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: src/DocumentOCR.WebApi/Dockerfile
+    container_name: document_ocr_api
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__DefaultConnection: >
+        Host=postgres;Port=5432;Database=document_ocr;Username=postgres;Password=${POSTGRES_PASSWORD:-changeme}
+      Storage__BasePath: /app/uploads
+      AzureDocumentIntelligence__Endpoint: ${AZURE_DOC_INTELLIGENCE_ENDPOINT}
+      AzureDocumentIntelligence__ApiKey: ${AZURE_DOC_INTELLIGENCE_KEY}
+    ports:
+      - "5000:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - uploads_data:/app/uploads
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: document_ocr_frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
+  uploads_data:

@@ -1,0 +1,6 @@
+@DocumentOCR.WebApi_HostAddress = http://localhost:5282
+
+GET {{DocumentOCR.WebApi_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

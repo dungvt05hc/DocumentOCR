@@ -1,0 +1,24 @@
+bin/
+obj/
+*.user
+.vs/
+.idea/
+*.suo
+.DS_Store
+
+# Uploads (never commit uploaded files)
+src/DocumentOCR.WebApi/uploads/
+C:/DocumentOCR/
+
+# Environment variables with secrets — use .env.local or environment vars
+appsettings.Local.json
+.env
+.env.local
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Test results
+TestResults/
+coverage/
