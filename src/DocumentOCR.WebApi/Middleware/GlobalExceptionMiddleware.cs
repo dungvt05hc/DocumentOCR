@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using DocumentOCR.Application.Exceptions;
 
 namespace DocumentOCR.WebApi.Middleware;
 
@@ -23,6 +24,11 @@ public class GlobalExceptionMiddleware
         catch (KeyNotFoundException ex)
         {
             await WriteErrorAsync(context, HttpStatusCode.NotFound, ex.Message);
+        }
+        catch (PathTraversalException ex)
+        {
+            _logger.LogWarning(ex, "Path traversal attempt blocked");
+            await WriteErrorAsync(context, HttpStatusCode.Forbidden, "Access denied.");
         }
         catch (UnauthorizedAccessException ex)
         {

@@ -1,3 +1,4 @@
+using DocumentOCR.Application.Exceptions;
 using DocumentOCR.Application.Interfaces;
 using DocumentOCR.Infrastructure.Storage;
 using Microsoft.Extensions.Logging;
@@ -71,7 +72,7 @@ public class LocalDocumentStorageService : IDocumentStorageService
     {
         var fullPath = Path.GetFullPath(Path.Combine(_options.BasePath, storedPath));
         if (!fullPath.StartsWith(Path.GetFullPath(_options.BasePath), StringComparison.OrdinalIgnoreCase))
-            throw new UnauthorizedAccessException("Access to files outside the storage root is not permitted.");
+            throw new PathTraversalException("Access to files outside the storage root is not permitted.");
         return fullPath;
     }
 }
