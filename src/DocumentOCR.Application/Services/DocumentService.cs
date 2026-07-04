@@ -56,21 +56,22 @@ public class DocumentService
         return docs.Select(MapToDto).ToList();
     }
 
-    public async Task<DocumentDetailDto?> GetByIdAsync(Guid id, CancellationToken ct = default)
+    public async Task<DocumentDetailDto?> GetByIdAsync(Guid id, Guid organizationId, CancellationToken ct = default)
     {
         var doc = await _db.Documents
             .Include(d => d.Fields)
             .Include(d => d.ValidationWarnings)
             .Include(d => d.OcrProviderLog)
-            .FirstOrDefaultAsync(d => d.Id == id, ct);
+            .FirstOrDefaultAsync(d => d.Id == id && d.OrganizationId == organizationId, ct);
 
         if (doc is null) return null;
         return MapToDetailDto(doc);
     }
 
-    public async Task MarkUploadedForProcessingAsync(Guid documentId, CancellationToken ct = default)
+    public async Task MarkUploadedForProcessingAsync(Guid documentId, Guid organizationId, CancellationToken ct = default)
     {
-        var doc = await _db.Documents.FindAsync([documentId], ct)
+        var doc = await _db.Documents
+            .FirstOrDefaultAsync(d => d.Id == documentId && d.OrganizationId == organizationId, ct)
             ?? throw new KeyNotFoundException($"Document {documentId} not found.");
 
         doc.Status = DocumentStatus.Uploaded;
@@ -81,11 +82,11 @@ public class DocumentService
         await _db.SaveChangesAsync(ct);
     }
 
-    public async Task UpdateFieldsAsync(Guid documentId, UpdateFieldsRequest request, CancellationToken ct = default)
+    public async Task UpdateFieldsAsync(Guid documentId, Guid organizationId, UpdateFieldsRequest request, CancellationToken ct = default)
     {
         var doc = await _db.Documents
             .Include(d => d.Fields)
-            .FirstOrDefaultAsync(d => d.Id == documentId, ct)
+            .FirstOrDefaultAsync(d => d.Id == documentId && d.OrganizationId == organizationId, ct)
             ?? throw new KeyNotFoundException($"Document {documentId} not found.");
 
         foreach (var update in request.Fields)
@@ -110,9 +111,10 @@ public class DocumentService
     }
 
     public async Task<(Stream Stream, string ContentType, string FileName)> DownloadOriginalAsync(
-        Guid documentId, CancellationToken ct = default)
+        Guid documentId, Guid organizationId, CancellationToken ct = default)
     {
-        var doc = await _db.Documents.FindAsync([documentId], ct)
+        var doc = await _db.Documents
+            .FirstOrDefaultAsync(d => d.Id == documentId && d.OrganizationId == organizationId, ct)
             ?? throw new KeyNotFoundException($"Document {documentId} not found.");
 
         var stream = await _storage.GetStreamAsync(doc.StoredFilePath, ct);

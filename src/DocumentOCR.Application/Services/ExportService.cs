@@ -16,12 +16,13 @@ public class ExportService
 
     public async Task<(byte[] Bytes, string FileName)> ExportToExcelAsync(
         IEnumerable<Guid> documentIds,
+        Guid organizationId,
         CancellationToken ct = default)
     {
         var ids = documentIds.ToList();
 
         var existing = await _db.Documents
-            .Where(d => ids.Contains(d.Id))
+            .Where(d => ids.Contains(d.Id) && d.OrganizationId == organizationId)
             .Select(d => d.Id)
             .ToListAsync(ct);
 

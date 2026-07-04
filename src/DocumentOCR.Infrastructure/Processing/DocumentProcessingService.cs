@@ -184,7 +184,7 @@ public class DocumentProcessingService : IDocumentProcessingService
             _logger.LogError(ex, "Processing failed for document {DocumentId}", documentId);
 
             document.Status = DocumentStatus.Failed;
-            document.ErrorMessage = ex.Message;
+            document.ErrorMessage = "Document processing failed unexpectedly. Please retry or contact support.";
             document.ProcessingCompletedAt = DateTime.UtcNow;
             document.UpdatedAt = DateTime.UtcNow;
 

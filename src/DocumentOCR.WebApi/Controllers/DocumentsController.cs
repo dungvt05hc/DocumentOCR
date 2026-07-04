@@ -3,6 +3,7 @@ using DocumentOCR.Application.Services;
 using DocumentOCR.Infrastructure.Jobs;
 using Hangfire;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace DocumentOCR.WebApi.Controllers;
 
@@ -26,6 +27,17 @@ public class DocumentsController : ControllerBase
             ["image/png"] = [".png"]
         };
 
+    // Magic-byte signatures for the allowed content types. Client-supplied Content-Type
+    // and file extension are trivially spoofable, so we also verify the actual file bytes
+    // before persisting anything to storage.
+    private static readonly Dictionary<string, byte[]> SignatureByContentType =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["application/pdf"] = [0x25, 0x50, 0x44, 0x46], // %PDF
+            ["image/jpeg"] = [0xFF, 0xD8, 0xFF],
+            ["image/png"] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+        };
+
     private const long MaxFileSizeBytes = 20 * 1024 * 1024; // 20 MB
 
     public DocumentsController(
@@ -41,6 +53,7 @@ public class DocumentsController : ControllerBase
     // POST /api/documents/upload
     [HttpPost("upload")]
     [RequestSizeLimit(MaxFileSizeBytes * 5)] // allow up to 5 files in one request
+    [EnableRateLimiting("OcrProcessing")]
     public async Task<IActionResult> Upload(
         [FromForm] IFormFileCollection files,
         CancellationToken ct)
@@ -53,6 +66,9 @@ public class DocumentsController : ControllerBase
         foreach (var file in files)
         {
             var validationError = ValidateUpload(file);
+            if (validationError is not null) return BadRequest(new { error = validationError });
+
+            validationError = await ValidateFileSignatureAsync(file, ct);
             if (validationError is not null) return BadRequest(new { error = validationError });
 
             await using var stream = file.OpenReadStream();
@@ -110,16 +126,17 @@ public class DocumentsController : ControllerBase
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> GetById(Guid id, CancellationToken ct)
     {
-        var doc = await _documentService.GetByIdAsync(id, ct);
+        var doc = await _documentService.GetByIdAsync(id, DefaultOrganizationId, ct);
         if (doc is null) return NotFound(new { error = $"Document {id} not found." });
         return Ok(doc);
     }
 
     // POST /api/documents/{id}/process  — re-trigger OCR
     [HttpPost("{id:guid}/process")]
+    [EnableRateLimiting("OcrProcessing")]
     public async Task<IActionResult> Process(Guid id, CancellationToken ct)
     {
-        await _documentService.MarkUploadedForProcessingAsync(id, ct);
+        await _documentService.MarkUploadedForProcessingAsync(id, DefaultOrganizationId, ct);
 
         var jobId = _jobs.Enqueue<DocumentProcessingJob>(
             job => job.ProcessDocumentAsync(id));
@@ -142,7 +159,7 @@ public class DocumentsController : ControllerBase
         if (request is null || request.Fields.Count == 0)
             return BadRequest(new { error = "No field updates provided." });
 
-        await _documentService.UpdateFieldsAsync(id, request, ct);
+        await _documentService.UpdateFieldsAsync(id, DefaultOrganizationId, request, ct);
         return NoContent();
     }
 
@@ -150,7 +167,7 @@ public class DocumentsController : ControllerBase
     [HttpGet("{id:guid}/download-original")]
     public async Task<IActionResult> DownloadOriginal(Guid id, CancellationToken ct)
     {
-        var (stream, contentType, fileName) = await _documentService.DownloadOriginalAsync(id, ct);
+        var (stream, contentType, fileName) = await _documentService.DownloadOriginalAsync(id, DefaultOrganizationId, ct);
 
         // Sanitize filename to prevent Content-Disposition injection
         var safeFileName = Path.GetFileName(fileName);
@@ -175,6 +192,21 @@ public class DocumentsController : ControllerBase
         {
             return $"File extension '{extension}' does not match content type '{file.ContentType}'.";
         }
+
+        return null;
+    }
+
+    private static async Task<string?> ValidateFileSignatureAsync(IFormFile file, CancellationToken ct)
+    {
+        // ValidateUpload already guarantees file.ContentType is a key in this map.
+        var signature = SignatureByContentType[file.ContentType];
+
+        var header = new byte[signature.Length];
+        await using var stream = file.OpenReadStream();
+        var bytesRead = await stream.ReadAsync(header.AsMemory(0, header.Length), ct);
+
+        if (bytesRead < signature.Length || !header.AsSpan(0, signature.Length).SequenceEqual(signature))
+            return $"File '{file.FileName}' does not match the expected format for '{file.ContentType}'.";
 
         return null;
     }
