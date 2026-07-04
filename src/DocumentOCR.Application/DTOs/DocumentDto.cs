@@ -12,6 +12,7 @@ public class DocumentDto
     public DocumentStatus Status { get; set; }
     public DocumentType DocumentType { get; set; }
     public string? ErrorMessage { get; set; }
+    public int WarningCount { get; set; }
     public DateTime? ProcessingStartedAt { get; set; }
     public DateTime? ProcessingCompletedAt { get; set; }
     public DateTime CreatedAt { get; set; }

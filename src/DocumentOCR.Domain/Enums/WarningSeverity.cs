@@ -4,5 +4,6 @@ public enum ValidationSeverity
 {
     Info = 0,
     Warning = 1,
-    Error = 2
+    High = 2,
+    Error = 3
 }

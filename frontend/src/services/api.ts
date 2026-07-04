@@ -4,24 +4,30 @@ import type {
   DocumentDto,
   ExportRequest,
   UpdateFieldsRequest,
+  UploadDocumentResponse,
 } from '../types';
 
-const api = axios.create({
+export const api = axios.create({
   baseURL: 'http://localhost:5000/api',
 });
 
-// ── Documents ─────────────────────────────────────────────────────────────────
-
-export const uploadDocuments = (files: File[]) => {
+export const uploadDocuments = (
+  files: File[],
+  onProgress?: (percent: number) => void
+) => {
   const form = new FormData();
-  files.forEach((f) => form.append('files', f));
-  return api.post<DocumentDto[]>('/documents/upload', form, {
+  files.forEach((file) => form.append('files', file));
+
+  return api.post<UploadDocumentResponse[]>('/documents/upload', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
+    onUploadProgress: (event) => {
+      if (!event.total || !onProgress) return;
+      onProgress(Math.round((event.loaded * 100) / event.total));
+    },
   });
 };
 
-export const getDocuments = () =>
-  api.get<DocumentDto[]>('/documents');
+export const getDocuments = () => api.get<DocumentDto[]>('/documents');
 
 export const getDocumentById = (id: string) =>
   api.get<DocumentDetailDto>(`/documents/${id}`);
@@ -34,8 +40,6 @@ export const updateFields = (id: string, request: UpdateFieldsRequest) =>
 
 export const downloadOriginal = (id: string) =>
   api.get(`/documents/${id}/download-original`, { responseType: 'blob' });
-
-// ── Exports ───────────────────────────────────────────────────────────────────
 
 export const exportToExcel = (request: ExportRequest) =>
   api.post('/exports/excel', request, { responseType: 'blob' });

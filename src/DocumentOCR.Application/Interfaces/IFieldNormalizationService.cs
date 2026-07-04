@@ -17,6 +17,9 @@ public interface IFieldNormalizationService
     /// <summary>Strips all non-digit characters from a tax code.</summary>
     string? NormalizeTaxCode(string? rawValue);
 
+    /// <summary>Normalizes Vietnamese currency markers such as VND, VND with diacritics, and the dong symbol.</summary>
+    string? NormalizeCurrencyCode(string? rawValue);
+
     /// <summary>Applies normalization to all fields of a document in place.</summary>
     void NormalizeFields(IEnumerable<ExtractedField> fields);
 }

@@ -1,6 +1,6 @@
-import { useState } from 'react';
-import { updateFields } from '../services/api';
-import type { DocumentDetailDto, FieldName, FieldUpdateItem } from '../types';
+import { useEffect, useMemo, useState } from 'react';
+import { downloadOriginal, updateFields } from '../services/api';
+import type { DocumentDetailDto, FieldName, FieldUpdateItem, ValidationWarningDto } from '../types';
 
 interface Props {
   document: DocumentDetailDto;
@@ -8,147 +8,180 @@ interface Props {
   onBack: () => void;
 }
 
-const FIELD_LABELS: Record<FieldName, string> = {
-  SupplierName: 'Supplier Name',
-  SupplierTaxCode: 'Tax Code',
-  InvoiceNumber: 'Invoice Number',
-  InvoiceDate: 'Invoice Date',
+const fields: FieldName[] = [
+  'SupplierName',
+  'SupplierTaxCode',
+  'InvoiceNumber',
+  'InvoiceDate',
+  'SubtotalAmount',
+  'VatAmount',
+  'TotalAmount',
+  'Currency',
+  'DocumentType',
+  'Notes',
+];
+
+const labels: Record<FieldName, string> = {
+  SupplierName: 'Supplier name',
+  SupplierTaxCode: 'Tax code',
+  InvoiceNumber: 'Invoice number',
+  InvoiceDate: 'Invoice date',
   SubtotalAmount: 'Subtotal',
-  VatAmount: 'VAT Amount',
-  TotalAmount: 'Total Amount',
+  VatAmount: 'VAT amount',
+  TotalAmount: 'Total amount',
   Currency: 'Currency',
-  DocumentType: 'Document Type',
+  DocumentType: 'Document type',
   Notes: 'Notes',
 };
 
 export function FieldEditor({ document: doc, onSaved, onBack }: Props) {
-  const initialValues = Object.fromEntries(
-    doc.fields.map((f) => [f.fieldName, f.normalizedValue ?? ''])
-  ) as Record<FieldName, string>;
+  const initialValues = useMemo(
+    () =>
+      Object.fromEntries(
+        fields.map((fieldName) => {
+          const field = doc.fields.find((item) => item.fieldName === fieldName);
+          return [fieldName, field?.normalizedValue ?? field?.rawValue ?? ''];
+        })
+      ) as Record<FieldName, string>,
+    [doc.fields]
+  );
 
   const [values, setValues] = useState<Record<FieldName, string>>(initialValues);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let objectUrl: string | null = null;
+    let cancelled = false;
+
+    downloadOriginal(doc.id)
+      .then((response) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(new Blob([response.data], { type: doc.contentType }));
+        setPreviewUrl(objectUrl);
+      })
+      .catch(() => setPreviewUrl(null));
+
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [doc.id, doc.contentType]);
+
+  const warningsByField = useMemo(() => {
+    const map = new Map<FieldName, ValidationWarningDto[]>();
+    for (const warning of doc.warnings) {
+      if (!warning.fieldName) continue;
+      map.set(warning.fieldName, [...(map.get(warning.fieldName) ?? []), warning]);
+    }
+    return map;
+  }, [doc.warnings]);
 
   const handleSave = async () => {
     setSaving(true);
     setError(null);
+
     try {
-      const updates: FieldUpdateItem[] = (Object.keys(values) as FieldName[]).map((key) => ({
-        fieldName: key,
-        normalizedValue: values[key] || null,
+      const updates: FieldUpdateItem[] = fields.map((fieldName) => ({
+        fieldName,
+        normalizedValue: values[fieldName] || null,
       }));
+
       await updateFields(doc.id, { fields: updates });
       onSaved();
     } catch {
-      setError('Failed to save. Please try again.');
+      setError('Failed to save field edits.');
     } finally {
       setSaving(false);
     }
   };
 
-  const confidenceFor = (field: FieldName) =>
-    doc.fields.find((f) => f.fieldName === field)?.confidenceScore;
-
-  const isEdited = (field: FieldName) =>
-    doc.fields.find((f) => f.fieldName === field)?.isEditedByUser ?? false;
-
   return (
-    <div>
-      <button onClick={onBack} style={{ marginBottom: 16, cursor: 'pointer' }}>← Back</button>
-      <h2 style={{ marginBottom: 4 }}>{doc.originalFileName}</h2>
-      <p style={{ color: '#888', marginTop: 0 }}>Status: {doc.status}</p>
-
-      {/* Warnings */}
-      {doc.warnings.length > 0 && (
-        <div style={{ marginBottom: 16 }}>
-          {doc.warnings.map((w) => (
-            <div
-              key={w.id}
-              style={{
-                padding: '6px 12px',
-                marginBottom: 4,
-                borderRadius: 4,
-                background: w.severity === 'Error' ? '#fce4e4' : w.severity === 'Warning' ? '#fff3cd' : '#e8f4fd',
-                color: w.severity === 'Error' ? '#c0392b' : w.severity === 'Warning' ? '#856404' : '#2c5f7a',
-                fontSize: '0.85rem',
-              }}
-            >
-              <strong>[{w.severity}]</strong>{w.relatedField ? ` ${w.relatedField}:` : ''} {w.message}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Field Editor Grid */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        {(Object.keys(FIELD_LABELS) as FieldName[]).map((fieldName) => {
-          const conf = confidenceFor(fieldName);
-          const edited = isEdited(fieldName);
-          return (
-            <div key={fieldName}>
-              <label style={{ display: 'block', fontSize: '0.8rem', color: '#555', marginBottom: 2 }}>
-                {FIELD_LABELS[fieldName]}
-                {conf !== null && conf !== undefined && (
-                  <span
-                    style={{
-                      marginLeft: 6,
-                      fontSize: '0.75rem',
-                      color: conf < 0.7 ? 'orange' : 'green',
-                    }}
-                  >
-                    {(conf * 100).toFixed(0)}%
-                  </span>
-                )}
-                {edited && (
-                  <span style={{ marginLeft: 6, fontSize: '0.7rem', color: '#2D6A9F' }}>edited</span>
-                )}
-              </label>
-              <input
-                type="text"
-                value={values[fieldName] ?? ''}
-                onChange={(e) => setValues({ ...values, [fieldName]: e.target.value })}
-                style={{
-                  width: '100%',
-                  padding: '6px 8px',
-                  border: '1px solid #ccc',
-                  borderRadius: 4,
-                  boxSizing: 'border-box',
-                  background: edited ? '#fffde7' : 'white',
-                }}
-              />
-            </div>
-          );
-        })}
-      </div>
-
-      {error && <p style={{ color: 'red', marginTop: 8 }}>{error}</p>}
-
-      <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
-        <button
-          onClick={handleSave}
-          disabled={saving}
-          style={{
-            padding: '8px 24px',
-            background: '#2D6A9F',
-            color: 'white',
-            border: 'none',
-            borderRadius: 4,
-            cursor: 'pointer',
-            fontSize: '0.95rem',
-          }}
-        >
-          {saving ? 'Saving…' : 'Save & Mark Reviewed'}
+    <main className="review-page">
+      <div className="review-header">
+        <button type="button" onClick={onBack}>
+          Back
         </button>
+        <div>
+          <h2>{doc.originalFileName}</h2>
+          <p className="muted">
+            {doc.status} · {doc.documentType} · {doc.warnings.length} warning
+            {doc.warnings.length === 1 ? '' : 's'}
+          </p>
+        </div>
       </div>
 
-      {/* OCR log */}
-      {doc.ocrLog && (
-        <div style={{ marginTop: 24, fontSize: '0.8rem', color: '#888' }}>
-          OCR: {doc.ocrLog.provider} | {doc.ocrLog.pageCount} page(s) |{' '}
-          {doc.ocrLog.processingTimeMs.toFixed(0)}ms | est. cost ${doc.ocrLog.estimatedCost.toFixed(4)}
-        </div>
-      )}
-    </div>
+      <div className="review-layout">
+        <section className="preview-pane" aria-label="Original document preview">
+          {previewUrl ? (
+            doc.contentType === 'application/pdf' ? (
+              <iframe title="Original document preview" src={previewUrl} />
+            ) : (
+              <img src={previewUrl} alt={doc.originalFileName} />
+            )
+          ) : (
+            <div className="preview-empty">Preview unavailable</div>
+          )}
+        </section>
+
+        <section className="fields-pane" aria-label="Extracted fields">
+          {doc.warnings.length > 0 && (
+            <div className="warnings">
+              {doc.warnings.map((warning) => (
+                <div key={warning.id} className={`warning ${warning.severity.toLowerCase()}`}>
+                  <strong>{warning.severity}</strong>
+                  {warning.fieldName ? ` · ${labels[warning.fieldName]}` : ''}: {warning.message}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="field-grid">
+            {fields.map((fieldName) => {
+              const field = doc.fields.find((item) => item.fieldName === fieldName);
+              const confidence = field?.confidence;
+              const fieldWarnings = warningsByField.get(fieldName) ?? [];
+
+              return (
+                <label
+                  key={fieldName}
+                  className={`field-editor${fieldWarnings.length > 0 ? ' has-warning' : ''}`}
+                >
+                  <span className="field-label-row">
+                    <span>{labels[fieldName]}</span>
+                    <span className="field-meta">
+                      {confidence !== null && confidence !== undefined
+                        ? `${Math.round(confidence * 100)}%`
+                        : 'No confidence'}
+                      {field?.isEditedByUser ? ' · edited' : ''}
+                    </span>
+                  </span>
+                  <input
+                    value={values[fieldName] ?? ''}
+                    onChange={(event) =>
+                      setValues((current) => ({ ...current, [fieldName]: event.target.value }))
+                    }
+                  />
+                  {fieldWarnings.map((warning) => (
+                    <span key={warning.id} className="field-warning">
+                      {warning.message}
+                    </span>
+                  ))}
+                </label>
+              );
+            })}
+          </div>
+
+          {error && <p className="message error">{error}</p>}
+
+          <div className="review-actions">
+            <button type="button" className="primary" onClick={handleSave} disabled={saving}>
+              {saving ? 'Saving...' : 'Save fields'}
+            </button>
+          </div>
+        </section>
+      </div>
+    </main>
   );
 }

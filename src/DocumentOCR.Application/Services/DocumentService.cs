@@ -2,7 +2,6 @@ using DocumentOCR.Application.DTOs;
 using DocumentOCR.Application.Interfaces;
 using DocumentOCR.Domain.Entities;
 using DocumentOCR.Domain.Enums;
-using Hangfire;
 using Microsoft.EntityFrameworkCore;
 
 namespace DocumentOCR.Application.Services;
@@ -11,16 +10,13 @@ public class DocumentService
 {
     private readonly IApplicationDbContext _db;
     private readonly IDocumentStorageService _storage;
-    private readonly IBackgroundJobClient _jobs;
 
     public DocumentService(
         IApplicationDbContext db,
-        IDocumentStorageService storage,
-        IBackgroundJobClient jobs)
+        IDocumentStorageService storage)
     {
         _db = db;
         _storage = storage;
-        _jobs = jobs;
     }
 
     public async Task<DocumentDto> UploadAsync(
@@ -53,6 +49,7 @@ public class DocumentService
     {
         var docs = await _db.Documents
             .Where(d => d.OrganizationId == organizationId)
+            .Include(d => d.ValidationWarnings)
             .OrderByDescending(d => d.CreatedAt)
             .ToListAsync(ct);
 
@@ -71,16 +68,17 @@ public class DocumentService
         return MapToDetailDto(doc);
     }
 
-    public async Task EnqueueProcessingAsync(Guid documentId, CancellationToken ct = default)
+    public async Task MarkUploadedForProcessingAsync(Guid documentId, CancellationToken ct = default)
     {
         var doc = await _db.Documents.FindAsync([documentId], ct)
             ?? throw new KeyNotFoundException($"Document {documentId} not found.");
 
         doc.Status = DocumentStatus.Uploaded;
+        doc.ErrorMessage = null;
+        doc.ProcessingStartedAt = null;
+        doc.ProcessingCompletedAt = null;
         doc.UpdatedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
-
-        _jobs.Enqueue<IDocumentProcessingService>(svc => svc.ProcessAsync(documentId, CancellationToken.None));
     }
 
     public async Task UpdateFieldsAsync(Guid documentId, UpdateFieldsRequest request, CancellationToken ct = default)
@@ -133,6 +131,7 @@ public class DocumentService
         Status = d.Status,
         DocumentType = d.DocumentType,
         ErrorMessage = d.ErrorMessage,
+        WarningCount = d.ValidationWarnings.Count,
         ProcessingStartedAt = d.ProcessingStartedAt,
         ProcessingCompletedAt = d.ProcessingCompletedAt,
         CreatedAt = d.CreatedAt,
@@ -149,6 +148,7 @@ public class DocumentService
         Status = d.Status,
         DocumentType = d.DocumentType,
         ErrorMessage = d.ErrorMessage,
+        WarningCount = d.ValidationWarnings.Count,
         ProcessingStartedAt = d.ProcessingStartedAt,
         ProcessingCompletedAt = d.ProcessingCompletedAt,
         CreatedAt = d.CreatedAt,

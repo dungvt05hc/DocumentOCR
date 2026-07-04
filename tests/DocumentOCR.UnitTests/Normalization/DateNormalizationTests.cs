@@ -22,6 +22,7 @@ public class DateNormalizationTests
     // ISO 8601
     [InlineData("2024-12-31", 2024, 12, 31)]
     [InlineData("2023-01-05", 2023,  1,  5)]
+    [InlineData("Ngày hóa đơn: 05/06/2026", 2026, 6, 5)]
     // 2-digit year
     [InlineData("31/12/24",   2024, 12, 31)]
     public void NormalizeDate_ValidFormats_ReturnsParsedDate(

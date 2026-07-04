@@ -1,50 +1,74 @@
-import { useCallback, useEffect, useState } from "react";
-import { DocumentTable } from "./components/DocumentTable";
-import { ExportPanel } from "./components/ExportPanel";
-import { FieldEditor } from "./components/FieldEditor";
-import { UploadZone } from "./components/UploadZone";
-import { getDocumentById, getDocuments, triggerProcessing } from "./services/api";
-import type { DocumentDetailDto, DocumentDto } from "./types";
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import './App.css';
+import { DocumentTable } from './components/DocumentTable';
+import { ExportPanel } from './components/ExportPanel';
+import { FieldEditor } from './components/FieldEditor';
+import { UploadZone } from './components/UploadZone';
+import { getDocumentById, getDocuments, triggerProcessing } from './services/api';
+import type { DocumentDetailDto, DocumentDto, DocumentStatus, UploadDocumentResponse } from './types';
 
-type View = "list" | "review";
+type Page = 'upload' | 'documents' | 'export';
+type View = Page | 'review';
+type StatusFilter = 'All' | DocumentStatus;
+
+const statuses: StatusFilter[] = [
+  'All',
+  'Uploaded',
+  'Processing',
+  'Processed',
+  'Reviewed',
+  'Failed',
+  'Exported',
+];
 
 export default function App() {
-  const [view, setView] = useState<View>("list");
+  const [view, setView] = useState<View>('upload');
   const [documents, setDocuments] = useState<DocumentDto[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [reviewDoc, setReviewDoc] = useState<DocumentDetailDto | null>(null);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('All');
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const loadDocuments = useCallback(async () => {
     try {
-      const res = await getDocuments();
-      setDocuments(res.data);
+      const response = await getDocuments();
+      setDocuments(response.data);
       setLoadError(null);
     } catch {
-      setLoadError("Failed to load documents. Is the API running?");
+      setLoadError('Failed to load documents. Is the API running?');
     }
   }, []);
 
   useEffect(() => {
     loadDocuments();
-    const interval = setInterval(loadDocuments, 5000);
-    return () => clearInterval(interval);
+    const interval = window.setInterval(loadDocuments, 5000);
+    return () => window.clearInterval(interval);
   }, [loadDocuments]);
 
-  const handleUploaded = (newDocs: DocumentDto[]) =>
-    setDocuments((prev) => [...newDocs, ...prev]);
+  const filteredDocuments = useMemo(
+    () =>
+      statusFilter === 'All'
+        ? documents
+        : documents.filter((document) => document.status === statusFilter),
+    [documents, statusFilter]
+  );
+
+  const handleUploaded = async (_uploaded: UploadDocumentResponse[]) => {
+    await loadDocuments();
+    setView('documents');
+  };
 
   const handleToggleSelect = (id: string) =>
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
+    setSelectedIds((current) => {
+      const next = new Set(current);
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
     });
 
   const handleViewDocument = async (id: string) => {
-    const res = await getDocumentById(id);
-    setReviewDoc(res.data);
-    setView("review");
+    const response = await getDocumentById(id);
+    setReviewDoc(response.data);
+    setView('review');
   };
 
   const handleTriggerProcess = async (id: string) => {
@@ -53,53 +77,108 @@ export default function App() {
   };
 
   const handleSaved = async () => {
-    setView("list");
+    setView('documents');
+    setReviewDoc(null);
     await loadDocuments();
   };
 
   return (
-    <div style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 16px", fontFamily: "system-ui, sans-serif" }}>
-      <header style={{ marginBottom: 24 }}>
-        <h1 style={{ margin: 0, color: "#2D6A9F" }}>DocumentOCR</h1>
-        <p style={{ margin: "4px 0 0", color: "#888", fontSize: "0.9rem" }}>
-          Vietnamese invoice and receipt extraction
-        </p>
+    <div className="app-shell">
+      <header className="app-header">
+        <div>
+          <h1>DocumentOCR</h1>
+          <p>Vietnamese invoice and receipt extraction</p>
+        </div>
+        {view !== 'review' && (
+          <nav className="tabs" aria-label="MVP pages">
+            <button
+              type="button"
+              className={view === 'upload' ? 'active' : ''}
+              onClick={() => setView('upload')}
+            >
+              Upload
+            </button>
+            <button
+              type="button"
+              className={view === 'documents' ? 'active' : ''}
+              onClick={() => setView('documents')}
+            >
+              Documents
+            </button>
+            <button
+              type="button"
+              className={view === 'export' ? 'active' : ''}
+              onClick={() => setView('export')}
+            >
+              Export
+            </button>
+          </nav>
+        )}
       </header>
 
-      {view === "list" && (
-        <>
-          <section style={{ marginBottom: 24 }}>
-            <h2 style={{ fontSize: "1rem", marginBottom: 8 }}>Upload Documents</h2>
+      {view === 'upload' && (
+        <main className="page-stack">
+          <section className="panel">
+            <div className="section-heading">
+              <h2>Upload Documents</h2>
+              <span className="muted">PDF, JPG, PNG</span>
+            </div>
             <UploadZone onUploaded={handleUploaded} />
           </section>
+        </main>
+      )}
 
-          <section>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-              <h2 style={{ fontSize: "1rem", margin: 0 }}>Documents</h2>
-              <button onClick={loadDocuments} style={{ cursor: "pointer", fontSize: "0.85rem" }}>Refresh</button>
+      {view === 'documents' && (
+        <main className="page-stack">
+          <section className="panel">
+            <div className="section-heading">
+              <h2>Documents List</h2>
+              <button type="button" onClick={loadDocuments}>
+                Refresh
+              </button>
             </div>
 
-            {loadError && <p style={{ color: "red" }}>{loadError}</p>}
+            <div className="filters">
+              <label>
+                Status
+                <select
+                  value={statusFilter}
+                  onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}
+                >
+                  {statuses.map((status) => (
+                    <option key={status} value={status}>
+                      {status}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
 
-            {selectedIds.size > 0 && (
-              <div style={{ marginBottom: 12 }}>
-                <ExportPanel selectedIds={selectedIds} onClearSelection={() => setSelectedIds(new Set())} />
-              </div>
-            )}
+            {loadError && <p className="message error">{loadError}</p>}
 
             <DocumentTable
-              documents={documents}
+              documents={filteredDocuments}
               selectedIds={selectedIds}
               onToggleSelect={handleToggleSelect}
               onViewDocument={handleViewDocument}
               onTriggerProcess={handleTriggerProcess}
             />
           </section>
-        </>
+        </main>
       )}
 
-      {view === "review" && reviewDoc && (
-        <FieldEditor document={reviewDoc} onSaved={handleSaved} onBack={() => setView("list")} />
+      {view === 'export' && (
+        <main className="page-stack">
+          <ExportPanel
+            documents={documents}
+            selectedIds={selectedIds}
+            onClearSelection={() => setSelectedIds(new Set())}
+          />
+        </main>
+      )}
+
+      {view === 'review' && reviewDoc && (
+        <FieldEditor document={reviewDoc} onSaved={handleSaved} onBack={() => setView('documents')} />
       )}
     </div>
   );

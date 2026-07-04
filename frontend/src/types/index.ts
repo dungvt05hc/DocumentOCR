@@ -1,11 +1,10 @@
-// ── Enums (mirroring the backend) ─────────────────────────────────────────────
-
 export type DocumentStatus =
-  | 'Pending'
+  | 'Uploaded'
   | 'Processing'
-  | 'ReviewRequired'
+  | 'Processed'
+  | 'Failed'
   | 'Reviewed'
-  | 'Failed';
+  | 'Exported';
 
 export type DocumentType = 'Unknown' | 'Invoice' | 'Receipt' | 'ExpenseDocument';
 
@@ -21,27 +20,28 @@ export type FieldName =
   | 'DocumentType'
   | 'Notes';
 
-export type WarningSeverity = 'Info' | 'Warning' | 'Error';
-
-export type OcrProviderType =
-  | 'None'
-  | 'AzureDocumentIntelligence'
-  | 'GoogleDocumentAI'
-  | 'AwsTextract'
-  | 'Tesseract';
-
-// ── API DTOs ──────────────────────────────────────────────────────────────────
+export type WarningSeverity = 'Info' | 'Warning' | 'High' | 'Error';
 
 export interface DocumentDto {
   id: string;
   originalFileName: string;
   contentType: string;
   fileSizeBytes: number;
+  pageCount: number;
   status: DocumentStatus;
-  detectedType: DocumentType;
-  failureReason: string | null;
+  documentType: DocumentType;
+  errorMessage: string | null;
+  warningCount: number;
+  processingStartedAt: string | null;
+  processingCompletedAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface UploadDocumentResponse extends DocumentDto {
+  documentId: string;
+  jobId: string;
+  message: string;
 }
 
 export interface ExtractedFieldDto {
@@ -49,19 +49,23 @@ export interface ExtractedFieldDto {
   fieldName: FieldName;
   rawValue: string | null;
   normalizedValue: string | null;
-  confidenceScore: number | null;
+  confidence: number | null;
+  pageNumber: number | null;
+  isRequired: boolean;
   isEditedByUser: boolean;
+  editedAt: string | null;
 }
 
 export interface ValidationWarningDto {
   id: string;
-  relatedField: FieldName | null;
+  fieldName: FieldName | null;
+  warningCode: string | null;
   severity: WarningSeverity;
   message: string;
 }
 
 export interface OcrProviderLogDto {
-  provider: OcrProviderType;
+  providerName: string;
   pageCount: number;
   processingTimeMs: number;
   estimatedCost: number;
