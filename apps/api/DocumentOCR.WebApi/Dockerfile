@@ -4,14 +4,14 @@ EXPOSE 8080
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
-COPY ["src/DocumentOCR.WebApi/DocumentOCR.WebApi.csproj", "src/DocumentOCR.WebApi/"]
-COPY ["src/DocumentOCR.Infrastructure/DocumentOCR.Infrastructure.csproj", "src/DocumentOCR.Infrastructure/"]
-COPY ["src/DocumentOCR.Application/DocumentOCR.Application.csproj", "src/DocumentOCR.Application/"]
-COPY ["src/DocumentOCR.Domain/DocumentOCR.Domain.csproj", "src/DocumentOCR.Domain/"]
-RUN dotnet restore "src/DocumentOCR.WebApi/DocumentOCR.WebApi.csproj"
+COPY ["apps/api/DocumentOCR.WebApi/DocumentOCR.WebApi.csproj", "apps/api/DocumentOCR.WebApi/"]
+COPY ["apps/api/DocumentOCR.Infrastructure/DocumentOCR.Infrastructure.csproj", "apps/api/DocumentOCR.Infrastructure/"]
+COPY ["apps/api/DocumentOCR.Application/DocumentOCR.Application.csproj", "apps/api/DocumentOCR.Application/"]
+COPY ["apps/api/DocumentOCR.Domain/DocumentOCR.Domain.csproj", "apps/api/DocumentOCR.Domain/"]
+RUN dotnet restore "apps/api/DocumentOCR.WebApi/DocumentOCR.WebApi.csproj"
 
 COPY . .
-RUN dotnet publish "src/DocumentOCR.WebApi/DocumentOCR.WebApi.csproj" -c Release -o /app/publish --no-restore
+RUN dotnet publish "apps/api/DocumentOCR.WebApi/DocumentOCR.WebApi.csproj" -c Release -o /app/publish --no-restore
 
 FROM base AS final
 WORKDIR /app

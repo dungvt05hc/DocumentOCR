@@ -4,13 +4,13 @@
     {
       "name": "backend",
       "runtimeExecutable": "dotnet",
-      "runtimeArgs": ["run", "--project", "src/DocumentOCR.WebApi"],
+      "runtimeArgs": ["run", "--project", "apps/api/DocumentOCR.WebApi"],
       "port": 5282
     },
     {
       "name": "frontend",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "frontend", "run", "dev"],
+      "runtimeArgs": ["--prefix", "apps/web", "run", "dev"],
       "port": 5173
     }
   ]

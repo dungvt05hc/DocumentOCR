@@ -1,12 +1,12 @@
 <Solution>
-  <Folder Name="/src/">
-    <Project Path="src/DocumentOCR.Application/DocumentOCR.Application.csproj" />
-    <Project Path="src/DocumentOCR.Domain/DocumentOCR.Domain.csproj" />
-    <Project Path="src/DocumentOCR.Infrastructure/DocumentOCR.Infrastructure.csproj" />
-    <Project Path="src/DocumentOCR.WebApi/DocumentOCR.WebApi.csproj" />
+  <Folder Name="/apps/api/">
+    <Project Path="apps/api/DocumentOCR.Application/DocumentOCR.Application.csproj" />
+    <Project Path="apps/api/DocumentOCR.Domain/DocumentOCR.Domain.csproj" />
+    <Project Path="apps/api/DocumentOCR.Infrastructure/DocumentOCR.Infrastructure.csproj" />
+    <Project Path="apps/api/DocumentOCR.WebApi/DocumentOCR.WebApi.csproj" />
   </Folder>
-  <Folder Name="/tests/">
-    <Project Path="tests/DocumentOCR.IntegrationTests/DocumentOCR.IntegrationTests.csproj" />
-    <Project Path="tests/DocumentOCR.UnitTests/DocumentOCR.UnitTests.csproj" />
+  <Folder Name="/apps/api/tests/">
+    <Project Path="apps/api/tests/DocumentOCR.IntegrationTests/DocumentOCR.IntegrationTests.csproj" />
+    <Project Path="apps/api/tests/DocumentOCR.UnitTests/DocumentOCR.UnitTests.csproj" />
   </Folder>
 </Solution>

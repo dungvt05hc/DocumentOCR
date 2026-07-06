@@ -11,7 +11,7 @@ Credentials **must never be committed** to source control. Use environment varia
 User secrets are stored outside the repository in your OS user profile.
 
 ```bash
-cd src/DocumentOCR.WebApi
+cd apps/api/DocumentOCR.WebApi
 
 dotnet user-secrets init
 dotnet user-secrets set "AzureDocumentIntelligence:Endpoint" "https://<your-resource>.cognitiveservices.azure.com/"

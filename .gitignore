@@ -7,7 +7,7 @@ obj/
 .DS_Store
 
 # Uploads (never commit uploaded files)
-src/DocumentOCR.WebApi/uploads/
+apps/api/DocumentOCR.WebApi/uploads/
 C:/DocumentOCR/
 
 # Environment variables with secrets — use .env.local or environment vars
@@ -16,8 +16,8 @@ appsettings.Local.json
 .env.local
 
 # Frontend
-frontend/node_modules/
-frontend/dist/
+apps/web/node_modules/
+apps/web/dist/
 
 # Test results
 TestResults/

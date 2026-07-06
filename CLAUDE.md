@@ -42,29 +42,29 @@ Do not implement these yet unless explicitly requested:
 # Build everything
 dotnet build DocumentOCR.slnx
 
-# Run the API (from repo root or src/DocumentOCR.WebApi)
-dotnet run --project src/DocumentOCR.WebApi
+# Run the API (from repo root or apps/api/DocumentOCR.WebApi)
+dotnet run --project apps/api/DocumentOCR.WebApi
 
 # Run all tests
 dotnet test DocumentOCR.slnx
 
 # Run a single test project
-dotnet test tests/DocumentOCR.UnitTests
+dotnet test apps/api/tests/DocumentOCR.UnitTests
 
 # Run a single test by fully-qualified name or filter
-dotnet test tests/DocumentOCR.UnitTests --filter "FullyQualifiedName~MoneyNormalizationTests"
+dotnet test apps/api/tests/DocumentOCR.UnitTests --filter "FullyQualifiedName~MoneyNormalizationTests"
 
-# EF Core migrations (run from src/DocumentOCR.WebApi so appsettings/connection string resolve)
+# EF Core migrations (run from apps/api/DocumentOCR.WebApi so appsettings/connection string resolve)
 dotnet ef migrations add <Name> --project ../DocumentOCR.Infrastructure --startup-project .
 dotnet ef database update --project ../DocumentOCR.Infrastructure --startup-project .
 ```
 
 Requires a local Postgres instance (see `docker-compose.yml`, or run just the `postgres` service). Hangfire also stores its job data in the same Postgres database.
 
-### Frontend (`frontend/`, React 19 + TypeScript + Vite)
+### Frontend (`apps/web/`, React 19 + TypeScript + Vite)
 
 ```bash
-cd frontend
+cd apps/web
 npm install
 npm run dev       # Vite dev server on :5173
 npm run build      # tsc -b && vite build
@@ -82,11 +82,11 @@ Runs Postgres, the API (port 5000), and the frontend (port 3000).
 
 ### Running without Azure credentials
 
-The app must always run locally without cloud dependency via `FakeOcrProvider` (returns a deterministic Vietnamese invoice result). To switch providers for local dev, swap the DI registration in [DependencyInjection.cs](src/DocumentOCR.Infrastructure/DependencyInjection.cs) between `AzureDocumentIntelligenceProvider` and `FakeOcrProvider` — do not merge that swap to main. See [LOCAL_DEVELOPMENT.md](LOCAL_DEVELOPMENT.md) for full credential setup (user-secrets vs. env vars) and supported Azure model IDs (`prebuilt-invoice`, `prebuilt-receipt`, `prebuilt-read`, `prebuilt-layout`).
+The app must always run locally without cloud dependency via `FakeOcrProvider` (returns a deterministic Vietnamese invoice result). To switch providers for local dev, swap the DI registration in [DependencyInjection.cs](apps/api/DocumentOCR.Infrastructure/DependencyInjection.cs) between `AzureDocumentIntelligenceProvider` and `FakeOcrProvider` — do not merge that swap to main. See [LOCAL_DEVELOPMENT.md](LOCAL_DEVELOPMENT.md) for full credential setup (user-secrets vs. env vars) and supported Azure model IDs (`prebuilt-invoice`, `prebuilt-receipt`, `prebuilt-read`, `prebuilt-layout`).
 
 ## Architecture
 
-Clean Architecture / modular monolith, four projects under `src/`:
+Clean Architecture / modular monolith, four projects under `apps/api/`:
 
 1. **Domain** (`DocumentOCR.Domain`) — Entities (`Document`, `DocumentPage`, `ExtractedField`, `ValidationWarning`, `ExportJob`, `Organization`, `AppUser`, `UsageLog`, `OcrProviderLog`), enums (`DocumentStatus`, `DocumentType`, `FieldName`, `OcrProviderType`, `WarningSeverity`, `ExportJobStatus`), `BaseEntity`. No dependency on EF Core, Azure SDK, file system, or UI.
 
@@ -111,7 +111,7 @@ OCR processing must never run directly inside the HTTP request — always via th
 
 Document statuses: `Uploaded → Processing → Processed | Failed → Reviewed → Exported`.
 
-### Frontend structure (`frontend/src/`)
+### Frontend structure (`apps/web/src/`)
 
 - `components/` — `UploadZone`, `DocumentTable`, `FieldEditor`, `ExportPanel`
 - `services/api.ts` — axios client for the backend API

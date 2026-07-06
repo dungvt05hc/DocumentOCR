@@ -19,7 +19,7 @@ services:
   api:
     build:
       context: .
-      dockerfile: src/DocumentOCR.WebApi/Dockerfile
+      dockerfile: apps/api/DocumentOCR.WebApi/Dockerfile
     container_name: document_ocr_api
     environment:
       ASPNETCORE_ENVIRONMENT: Production
@@ -38,7 +38,7 @@ services:
 
   frontend:
     build:
-      context: ./frontend
+      context: ./apps/web
       dockerfile: Dockerfile
       args:
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:5000/api}
