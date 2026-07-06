@@ -35,10 +35,5 @@ public class DocumentConfiguration : IEntityTypeConfiguration<Document>
             .WithOne(w => w.Document)
             .HasForeignKey(w => w.DocumentId)
             .OnDelete(DeleteBehavior.Cascade);
-
-        builder.HasOne(d => d.OcrProviderLog)
-            .WithOne(l => l.Document)
-            .HasForeignKey<OcrProviderLog>(l => l.DocumentId)
-            .OnDelete(DeleteBehavior.Cascade);
     }
 }

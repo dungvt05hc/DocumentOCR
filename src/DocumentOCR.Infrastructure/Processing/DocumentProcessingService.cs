@@ -18,7 +18,6 @@ public class DocumentProcessingService : IDocumentProcessingService
     private readonly IFieldExtractionService _extraction;
     private readonly IFieldNormalizationService _normalization;
     private readonly IFieldValidationService _validation;
-    private readonly IUsageTrackingService _usage;
     private readonly ILogger<DocumentProcessingService> _logger;
 
     public DocumentProcessingService(
@@ -28,7 +27,6 @@ public class DocumentProcessingService : IDocumentProcessingService
         IFieldExtractionService extraction,
         IFieldNormalizationService normalization,
         IFieldValidationService validation,
-        IUsageTrackingService usage,
         ILogger<DocumentProcessingService> logger)
     {
         _db = db;
@@ -37,7 +35,6 @@ public class DocumentProcessingService : IDocumentProcessingService
         _extraction = extraction;
         _normalization = normalization;
         _validation = validation;
-        _usage = usage;
         _logger = logger;
     }
 
@@ -47,7 +44,6 @@ public class DocumentProcessingService : IDocumentProcessingService
             .Include(d => d.Pages)
             .Include(d => d.Fields)
             .Include(d => d.ValidationWarnings)
-            .Include(d => d.OcrProviderLog)
             .FirstOrDefaultAsync(d => d.Id == documentId, ct);
 
         if (document is null)
@@ -125,7 +121,6 @@ public class DocumentProcessingService : IDocumentProcessingService
                 document.UpdatedAt = DateTime.UtcNow;
 
                 await _db.SaveChangesAsync(ct);
-                await TrackUsageSafelyAsync(ocrResult, ct);
 
                 _logger.LogWarning(
                     "Document {DocumentId} marked Failed because OCR provider {ProviderName} returned an unsuccessful result: {ErrorMessage}",
@@ -168,7 +163,6 @@ public class DocumentProcessingService : IDocumentProcessingService
             document.UpdatedAt = DateTime.UtcNow;
 
             await _db.SaveChangesAsync(ct);
-            await TrackUsageSafelyAsync(ocrResult, ct);
 
             _logger.LogInformation(
                 "Document {DocumentId} processed successfully. Status={Status}, DocumentType={DocumentType}, Pages={PageCount}, Fields={FieldCount}, Warnings={WarningCount}",
@@ -209,32 +203,6 @@ public class DocumentProcessingService : IDocumentProcessingService
 
         foreach (var warning in document.ValidationWarnings.ToList())
             _db.ValidationWarnings.Remove(warning);
-
-        if (document.OcrProviderLog is not null)
-            _db.OcrProviderLogs.Remove(document.OcrProviderLog);
-    }
-
-    private async Task TrackUsageSafelyAsync(OcrResult ocrResult, CancellationToken ct)
-    {
-        try
-        {
-            await _usage.TrackAsync(
-                _ocrProvider.ProviderName,
-                ocrResult.PageCount,
-                (long)ocrResult.ProcessingTimeMs,
-                ocrResult.EstimatedCost,
-                ct);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(
-                ex,
-                "Failed to track usage for OCR provider {ProviderName}. Pages={PageCount}, DurationMs={ProcessingTimeMs}, EstimatedCost={EstimatedCost}",
-                _ocrProvider.ProviderName,
-                ocrResult.PageCount,
-                ocrResult.ProcessingTimeMs,
-                ocrResult.EstimatedCost);
-        }
     }
 
     private static DocumentType GetDetectedDocumentType(IEnumerable<ExtractedField> fields)

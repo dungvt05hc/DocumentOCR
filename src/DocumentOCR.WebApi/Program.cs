@@ -54,6 +54,19 @@ builder.Services.AddRateLimiter(options =>
                 Window = TimeSpan.FromMinutes(1),
                 QueueLimit = 0
             }));
+
+    // Same cost-guard rationale as OcrProcessing: unauthenticated callers could otherwise
+    // flood Excel export generation (CPU cost, disk I/O). Kept as a separate policy so
+    // export traffic doesn't consume the OCR-triggering endpoints' budget or vice versa.
+    options.AddPolicy("Export", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 10,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0
+            }));
 });
 
 // Register all Infrastructure services (DB, OCR, Storage, Hangfire, etc.)

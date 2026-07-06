@@ -19,7 +19,7 @@ public class DocumentProcessingServiceTests
     public async Task ProcessAsync_UnknownDocument_ReturnsWithoutThrowing()
     {
         await using var db = CreateDbContext();
-        var sut = CreateSut(db, new FakeOcrProvider(), new FakeDocumentStorageService(), new RecordingUsageTrackingService());
+        var sut = CreateSut(db, new FakeOcrProvider(), new FakeDocumentStorageService());
 
         await sut.ProcessAsync(Guid.NewGuid());
     }
@@ -29,8 +29,7 @@ public class DocumentProcessingServiceTests
     {
         await using var db = CreateDbContext();
         var document = await SeedDocumentAsync(db, DocumentStatus.Uploaded);
-        var usage = new RecordingUsageTrackingService();
-        var sut = CreateSut(db, new FakeOcrProvider(), new FakeDocumentStorageService(), usage);
+        var sut = CreateSut(db, new FakeOcrProvider(), new FakeDocumentStorageService());
 
         await sut.ProcessAsync(document.Id);
 
@@ -38,7 +37,7 @@ public class DocumentProcessingServiceTests
             .Include(d => d.Pages)
             .Include(d => d.Fields)
             .Include(d => d.ValidationWarnings)
-            .Include(d => d.OcrProviderLog)
+            .Include(d => d.OcrProviderLogs)
             .SingleAsync(d => d.Id == document.Id);
 
         Assert.Equal(DocumentStatus.Processed, reloaded.Status);
@@ -51,16 +50,13 @@ public class DocumentProcessingServiceTests
         Assert.Contains(reloaded.Fields, f => f.FieldName == nameof(FieldName.TotalAmount) && f.NormalizedValue == "1236767");
         Assert.Empty(reloaded.ValidationWarnings);
 
-        Assert.NotNull(reloaded.OcrProviderLog);
-        Assert.Equal("Fake", reloaded.OcrProviderLog!.ProviderName);
-        Assert.True(reloaded.OcrProviderLog.Success);
-
-        Assert.Equal(1, usage.CallCount);
-        Assert.Equal("Fake", usage.LastProviderName);
+        var log = Assert.Single(reloaded.OcrProviderLogs);
+        Assert.Equal("Fake", log.ProviderName);
+        Assert.True(log.Success);
     }
 
     [Fact]
-    public async Task ProcessAsync_ReprocessingDocument_RemovesStaleArtifactsBeforeAddingNewOnes()
+    public async Task ProcessAsync_ReprocessingDocument_RemovesStaleFieldsAndPagesButKeepsOcrProviderLogHistory()
     {
         await using var db = CreateDbContext();
         var document = await SeedDocumentAsync(db, DocumentStatus.Processed, doc =>
@@ -68,9 +64,9 @@ public class DocumentProcessingServiceTests
             doc.Pages.Add(new DocumentPage { DocumentId = doc.Id, PageNumber = 1, RawText = "stale page text" });
             doc.Fields.Add(new ExtractedField { DocumentId = doc.Id, FieldName = nameof(FieldName.Notes), RawValue = "stale note", NormalizedValue = "stale note" });
             doc.ValidationWarnings.Add(new ValidationWarning { DocumentId = doc.Id, FieldName = nameof(FieldName.Notes), WarningCode = "STALE", Severity = ValidationSeverity.Info, Message = "stale warning" });
-            doc.OcrProviderLog = new OcrProviderLog { DocumentId = doc.Id, ProviderName = "StaleProvider", Success = true };
+            doc.OcrProviderLogs.Add(new OcrProviderLog { DocumentId = doc.Id, ProviderName = "StaleProvider", Success = true });
         });
-        var sut = CreateSut(db, new FakeOcrProvider(), new FakeDocumentStorageService(), new RecordingUsageTrackingService());
+        var sut = CreateSut(db, new FakeOcrProvider(), new FakeDocumentStorageService());
 
         await sut.ProcessAsync(document.Id);
 
@@ -78,14 +74,19 @@ public class DocumentProcessingServiceTests
             .Include(d => d.Pages)
             .Include(d => d.Fields)
             .Include(d => d.ValidationWarnings)
-            .Include(d => d.OcrProviderLog)
+            .Include(d => d.OcrProviderLogs)
             .SingleAsync(d => d.Id == document.Id);
 
         Assert.DoesNotContain(reloaded.Fields, f => f.NormalizedValue == "stale note");
         Assert.DoesNotContain(reloaded.ValidationWarnings, w => w.WarningCode == "STALE");
         Assert.Single(reloaded.Pages);
         Assert.NotEqual("stale page text", reloaded.Pages.Single().RawText);
-        Assert.Equal("Fake", reloaded.OcrProviderLog!.ProviderName);
+
+        // OcrProviderLog is an append-only audit trail: the prior attempt's row is preserved
+        // alongside the new one rather than being replaced.
+        Assert.Equal(2, reloaded.OcrProviderLogs.Count);
+        Assert.Contains(reloaded.OcrProviderLogs, l => l.ProviderName == "StaleProvider");
+        Assert.Contains(reloaded.OcrProviderLogs, l => l.ProviderName == "Fake");
     }
 
     [Fact]
@@ -94,15 +95,15 @@ public class DocumentProcessingServiceTests
         await using var db = CreateDbContext();
         var document = await SeedDocumentAsync(db, DocumentStatus.Uploaded);
         var failingProvider = new StubOcrProvider(new OcrResult { Success = false, ErrorMessage = "Provider quota exceeded.", PageCount = 0 });
-        var sut = CreateSut(db, failingProvider, new FakeDocumentStorageService(), new RecordingUsageTrackingService());
+        var sut = CreateSut(db, failingProvider, new FakeDocumentStorageService());
 
         await sut.ProcessAsync(document.Id);
 
-        var reloaded = await db.Documents.Include(d => d.OcrProviderLog).SingleAsync(d => d.Id == document.Id);
+        var reloaded = await db.Documents.Include(d => d.OcrProviderLogs).SingleAsync(d => d.Id == document.Id);
         Assert.Equal(DocumentStatus.Failed, reloaded.Status);
         Assert.Equal("Provider quota exceeded.", reloaded.ErrorMessage);
-        Assert.NotNull(reloaded.OcrProviderLog);
-        Assert.False(reloaded.OcrProviderLog!.Success);
+        var log = Assert.Single(reloaded.OcrProviderLogs);
+        Assert.False(log.Success);
     }
 
     [Fact]
@@ -111,7 +112,7 @@ public class DocumentProcessingServiceTests
         await using var db = CreateDbContext();
         var document = await SeedDocumentAsync(db, DocumentStatus.Uploaded);
         var throwingProvider = new ThrowingOcrProvider();
-        var sut = CreateSut(db, throwingProvider, new FakeDocumentStorageService(), new RecordingUsageTrackingService());
+        var sut = CreateSut(db, throwingProvider, new FakeDocumentStorageService());
 
         await sut.ProcessAsync(document.Id);
 
@@ -120,25 +121,10 @@ public class DocumentProcessingServiceTests
         Assert.Equal("Document processing failed unexpectedly. Please retry or contact support.", reloaded.ErrorMessage);
     }
 
-    [Fact]
-    public async Task ProcessAsync_UsageTrackingThrows_StillLeavesDocumentProcessed()
-    {
-        await using var db = CreateDbContext();
-        var document = await SeedDocumentAsync(db, DocumentStatus.Uploaded);
-        var throwingUsage = new ThrowingUsageTrackingService();
-        var sut = CreateSut(db, new FakeOcrProvider(), new FakeDocumentStorageService(), throwingUsage);
-
-        await sut.ProcessAsync(document.Id);
-
-        var reloaded = await db.Documents.SingleAsync(d => d.Id == document.Id);
-        Assert.Equal(DocumentStatus.Processed, reloaded.Status);
-    }
-
     private static DocumentProcessingService CreateSut(
         ApplicationDbContext db,
         IDocumentOcrProvider ocrProvider,
-        IDocumentStorageService storage,
-        IUsageTrackingService usage) =>
+        IDocumentStorageService storage) =>
         new(
             db,
             storage,
@@ -146,7 +132,6 @@ public class DocumentProcessingServiceTests
             new FieldExtractionService(),
             new FieldNormalizationService(),
             new FieldValidationService(),
-            usage,
             NullLogger<DocumentProcessingService>.Instance);
 
     private static ApplicationDbContext CreateDbContext()
@@ -215,24 +200,5 @@ public class DocumentProcessingServiceTests
 
         public Task<OcrResult> AnalyzeAsync(DocumentInput input, CancellationToken ct = default) =>
             throw new InvalidOperationException("Simulated OCR provider failure.");
-    }
-
-    private sealed class RecordingUsageTrackingService : IUsageTrackingService
-    {
-        public int CallCount { get; private set; }
-        public string? LastProviderName { get; private set; }
-
-        public Task TrackAsync(string providerName, int pageCount, long processingDurationMs, decimal estimatedCost, CancellationToken ct = default)
-        {
-            CallCount++;
-            LastProviderName = providerName;
-            return Task.CompletedTask;
-        }
-    }
-
-    private sealed class ThrowingUsageTrackingService : IUsageTrackingService
-    {
-        public Task TrackAsync(string providerName, int pageCount, long processingDurationMs, decimal estimatedCost, CancellationToken ct = default) =>
-            throw new InvalidOperationException("Simulated usage tracking failure.");
     }
 }

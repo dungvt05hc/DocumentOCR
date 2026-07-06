@@ -64,7 +64,7 @@ public class DocumentService
         var doc = await _db.Documents
             .Include(d => d.Fields)
             .Include(d => d.ValidationWarnings)
-            .Include(d => d.OcrProviderLog)
+            .Include(d => d.OcrProviderLogs)
             .FirstOrDefaultAsync(d => d.Id == id && d.OrganizationId == organizationId, ct);
 
         if (doc is null) return null;
@@ -98,6 +98,9 @@ public class DocumentService
             var field = doc.Fields.FirstOrDefault(f => f.FieldName == update.FieldName);
             if (field is null)
             {
+                if (!Enum.TryParse<FieldName>(update.FieldName, out _))
+                    throw new ArgumentException($"'{update.FieldName}' is not a recognized field name.");
+
                 field = new ExtractedField { DocumentId = documentId, FieldName = update.FieldName };
                 doc.Fields.Add(field);
                 _db.ExtractedFields.Add(field);
@@ -189,14 +192,22 @@ public class DocumentService
             Severity = w.Severity,
             Message = w.Message
         }).ToList(),
-        OcrLog = d.OcrProviderLog is null ? null : new OcrProviderLogDto
-        {
-            ProviderName = d.OcrProviderLog.ProviderName,
-            PageCount = d.OcrProviderLog.PageCount,
-            ProcessingTimeMs = d.OcrProviderLog.ProcessingTimeMs,
-            EstimatedCost = d.OcrProviderLog.EstimatedCost,
-            Success = d.OcrProviderLog.Success,
-            ErrorMessage = d.OcrProviderLog.ErrorMessage
-        }
+        OcrLog = MapLatestOcrLog(d.OcrProviderLogs)
     };
+
+    private static OcrProviderLogDto? MapLatestOcrLog(IEnumerable<OcrProviderLog> logs)
+    {
+        var latest = logs.OrderByDescending(l => l.CreatedAt).FirstOrDefault();
+        if (latest is null) return null;
+
+        return new OcrProviderLogDto
+        {
+            ProviderName = latest.ProviderName,
+            PageCount = latest.PageCount,
+            ProcessingTimeMs = latest.ProcessingTimeMs,
+            EstimatedCost = latest.EstimatedCost,
+            Success = latest.Success,
+            ErrorMessage = latest.ErrorMessage
+        };
+    }
 }

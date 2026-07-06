@@ -25,6 +25,10 @@ public class GlobalExceptionMiddleware
         {
             await WriteErrorAsync(context, HttpStatusCode.NotFound, ex.Message);
         }
+        catch (ArgumentException ex)
+        {
+            await WriteErrorAsync(context, HttpStatusCode.BadRequest, ex.Message);
+        }
         catch (PathTraversalException ex)
         {
             _logger.LogWarning(ex, "Path traversal attempt blocked");

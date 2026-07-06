@@ -12,5 +12,13 @@ public class OcrProviderLogConfiguration : IEntityTypeConfiguration<OcrProviderL
         builder.Property(l => l.ProviderName).HasMaxLength(100).IsRequired();
         builder.Property(l => l.ErrorMessage).HasMaxLength(2000);
         builder.Property(l => l.EstimatedCost).HasColumnType("numeric(18,6)");
+
+        builder.HasOne(l => l.Document)
+            .WithMany(d => d.OcrProviderLogs)
+            .HasForeignKey(l => l.DocumentId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        builder.HasIndex(l => l.DocumentId);
+        builder.HasIndex(l => l.CreatedAt);
     }
 }

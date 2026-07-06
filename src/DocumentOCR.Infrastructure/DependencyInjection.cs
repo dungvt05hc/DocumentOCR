@@ -44,7 +44,6 @@ public static class DependencyInjection
         services.AddScoped<IFieldNormalizationService, FieldNormalizationService>();
         services.AddScoped<IFieldValidationService, FieldValidationService>();
         services.AddScoped<IDocumentProcessingService, DocumentProcessingService>();
-        services.AddScoped<IUsageTrackingService, UsageTrackingService>();
 
         // ── Export ───────────────────────────────────────────────────────────────
         services.AddScoped<IExcelExportService, ClosedXmlExportService>();

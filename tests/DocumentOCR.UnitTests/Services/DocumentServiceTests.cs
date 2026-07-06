@@ -87,6 +87,24 @@ public class DocumentServiceTests
     }
 
     [Fact]
+    public async Task UpdateFieldsAsync_UnrecognizedFieldName_ThrowsArgumentExceptionWithoutPersistingField()
+    {
+        await using var db = CreateDbContext();
+        var document = await SeedDocumentAsync(db, _ => { });
+        var sut = CreateSut(db);
+        var request = new UpdateFieldsRequest
+        {
+            Fields = [new FieldUpdateItem { FieldName = "NotARealField", NormalizedValue = "x" }]
+        };
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            sut.UpdateFieldsAsync(document.Id, OrganizationId, request));
+
+        var reloaded = await db.Documents.Include(d => d.Fields).SingleAsync(d => d.Id == document.Id);
+        Assert.Empty(reloaded.Fields);
+    }
+
+    [Fact]
     public async Task UploadAsync_ValidFile_SavesToStorageAndCreatesUploadedDocument()
     {
         await using var db = CreateDbContext();

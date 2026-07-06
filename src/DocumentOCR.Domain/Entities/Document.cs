@@ -24,6 +24,5 @@ public class Document : BaseEntity
     public ICollection<DocumentPage> Pages { get; set; } = new List<DocumentPage>();
     public ICollection<ExtractedField> Fields { get; set; } = new List<ExtractedField>();
     public ICollection<ValidationWarning> ValidationWarnings { get; set; } = new List<ValidationWarning>();
-    public OcrProviderLog? OcrProviderLog { get; set; }
-    public ICollection<ExportJob> ExportJobs { get; set; } = new List<ExportJob>();
+    public ICollection<OcrProviderLog> OcrProviderLogs { get; set; } = new List<OcrProviderLog>();
 }

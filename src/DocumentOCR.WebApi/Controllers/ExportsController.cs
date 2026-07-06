@@ -2,6 +2,7 @@ using DocumentOCR.Application.DTOs;
 using DocumentOCR.Application.Services;
 using DocumentOCR.Domain.Common;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace DocumentOCR.WebApi.Controllers;
 
@@ -22,6 +23,7 @@ public class ExportsController : ControllerBase
 
     // POST /api/exports/excel
     [HttpPost("excel")]
+    [EnableRateLimiting("Export")]
     public async Task<IActionResult> ExportExcel(
         [FromBody] ExportRequest request,
         CancellationToken ct)

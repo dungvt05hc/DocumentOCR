@@ -9,14 +9,11 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
     public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options) : base(options) { }
 
     public DbSet<Organization> Organizations => Set<Organization>();
-    public DbSet<AppUser> AppUsers => Set<AppUser>();
     public DbSet<Document> Documents => Set<Document>();
     public DbSet<DocumentPage> DocumentPages => Set<DocumentPage>();
     public DbSet<ExtractedField> ExtractedFields => Set<ExtractedField>();
     public DbSet<ValidationWarning> ValidationWarnings => Set<ValidationWarning>();
     public DbSet<OcrProviderLog> OcrProviderLogs => Set<OcrProviderLog>();
-    public DbSet<ExportJob> ExportJobs => Set<ExportJob>();
-    public DbSet<UsageLog> UsageLogs => Set<UsageLog>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

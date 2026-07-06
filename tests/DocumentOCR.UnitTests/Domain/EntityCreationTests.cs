@@ -27,25 +27,6 @@ public class EntityCreationTests
         Assert.InRange(org.UpdatedAt, before, after);
     }
 
-    // ── AppUser ───────────────────────────────────────────────────────────────────
-
-    [Fact]
-    public void AppUser_Create_HasDefaultGuidIdAndRequiredFields()
-    {
-        var orgId = Guid.NewGuid();
-        var user = new AppUser
-        {
-            OrganizationId = orgId,
-            DisplayName = "Jane Doe",
-            Email = "jane@example.com"
-        };
-
-        Assert.NotEqual(Guid.Empty, user.Id);
-        Assert.Equal(orgId, user.OrganizationId);
-        Assert.Equal("Jane Doe", user.DisplayName);
-        Assert.Equal("jane@example.com", user.Email);
-    }
-
     // ── Document ──────────────────────────────────────────────────────────────────
 
     [Fact]
@@ -89,7 +70,7 @@ public class EntityCreationTests
         Assert.Empty(doc.Pages);
         Assert.Empty(doc.Fields);
         Assert.Empty(doc.ValidationWarnings);
-        Assert.Empty(doc.ExportJobs);
+        Assert.Empty(doc.OcrProviderLogs);
     }
 
     // ── DocumentPage ─────────────────────────────────────────────────────────────
@@ -184,41 +165,6 @@ public class EntityCreationTests
         Assert.Equal(nameof(FieldName.TotalAmount), warning.FieldName);
         Assert.Equal("INVALID_TOTAL_AMOUNT", warning.WarningCode);
         Assert.Equal(ValidationSeverity.Error, warning.Severity);
-    }
-
-    // ── ExportJob ─────────────────────────────────────────────────────────────────
-
-    [Fact]
-    public void ExportJob_Create_DefaultStatusIsPending()
-    {
-        var job = new ExportJob { StoredFilePath = "/exports/report.xlsx" };
-
-        Assert.Equal(ExportJobStatus.Pending, job.Status);
-        Assert.Empty(job.Documents);
-        Assert.Null(job.ErrorMessage);
-    }
-
-    // ── UsageLog ──────────────────────────────────────────────────────────────────
-
-    [Fact]
-    public void UsageLog_Create_StoresProviderUsageData()
-    {
-        var before = DateTime.UtcNow.AddSeconds(-1);
-        var log = new UsageLog
-        {
-            ProviderName = "AzureDocumentIntelligence",
-            PageCount = 5,
-            ProcessingDurationMs = 3200,
-            EstimatedCost = 0.025m
-        };
-        var after = DateTime.UtcNow.AddSeconds(1);
-
-        Assert.NotEqual(Guid.Empty, log.Id);
-        Assert.Equal("AzureDocumentIntelligence", log.ProviderName);
-        Assert.Equal(5, log.PageCount);
-        Assert.Equal(3200, log.ProcessingDurationMs);
-        Assert.Equal(0.025m, log.EstimatedCost);
-        Assert.InRange(log.CreatedAt, before, after);
     }
 
     // ── OcrProviderLog ────────────────────────────────────────────────────────────
