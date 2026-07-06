@@ -4,7 +4,7 @@ import type {
   DocumentDto,
   ExportRequest,
   UpdateFieldsRequest,
-  UploadDocumentResponse,
+  UploadFileResult,
 } from '../types';
 
 export const api = axios.create({
@@ -18,7 +18,7 @@ export const uploadDocuments = (
   const form = new FormData();
   files.forEach((file) => form.append('files', file));
 
-  return api.post<UploadDocumentResponse[]>('/documents/upload', form, {
+  return api.post<UploadFileResult[]>('/documents/upload', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
     onUploadProgress: (event) => {
       if (!event.total || !onProgress) return;

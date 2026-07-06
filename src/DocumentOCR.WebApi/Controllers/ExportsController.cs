@@ -1,5 +1,6 @@
 using DocumentOCR.Application.DTOs;
 using DocumentOCR.Application.Services;
+using DocumentOCR.Domain.Common;
 using Microsoft.AspNetCore.Mvc;
 
 namespace DocumentOCR.WebApi.Controllers;
@@ -12,7 +13,7 @@ public class ExportsController : ControllerBase
 
     // For MVP, we use a fixed organization. In a real multi-tenant app,
     // this would come from the authenticated user's claims.
-    private static readonly Guid DefaultOrganizationId = Guid.Parse("00000000-0000-0000-0000-000000000001");
+    private static readonly Guid DefaultOrganizationId = DefaultOrganization.Id;
 
     public ExportsController(ExportService exportService)
     {

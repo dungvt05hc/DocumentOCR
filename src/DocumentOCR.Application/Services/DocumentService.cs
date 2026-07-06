@@ -10,13 +10,16 @@ public class DocumentService
 {
     private readonly IApplicationDbContext _db;
     private readonly IDocumentStorageService _storage;
+    private readonly IFieldValidationService _validation;
 
     public DocumentService(
         IApplicationDbContext db,
-        IDocumentStorageService storage)
+        IDocumentStorageService storage,
+        IFieldValidationService validation)
     {
         _db = db;
         _storage = storage;
+        _validation = validation;
     }
 
     public async Task<DocumentDto> UploadAsync(
@@ -86,6 +89,7 @@ public class DocumentService
     {
         var doc = await _db.Documents
             .Include(d => d.Fields)
+            .Include(d => d.ValidationWarnings)
             .FirstOrDefaultAsync(d => d.Id == documentId && d.OrganizationId == organizationId, ct)
             ?? throw new KeyNotFoundException($"Document {documentId} not found.");
 
@@ -95,6 +99,7 @@ public class DocumentService
             if (field is null)
             {
                 field = new ExtractedField { DocumentId = documentId, FieldName = update.FieldName };
+                doc.Fields.Add(field);
                 _db.ExtractedFields.Add(field);
             }
 
@@ -103,6 +108,15 @@ public class DocumentService
             field.EditedAt = DateTime.UtcNow;
             field.UpdatedAt = DateTime.UtcNow;
         }
+
+        // Warnings were computed against the original OCR output; the user's corrections
+        // may have resolved some and none of the old ones still reflect the current data,
+        // so the whole warning set is replaced rather than left stale.
+        foreach (var warning in doc.ValidationWarnings.ToList())
+            _db.ValidationWarnings.Remove(warning);
+
+        foreach (var warning in _validation.Validate(documentId, doc.Fields))
+            _db.ValidationWarnings.Add(warning);
 
         doc.Status = DocumentStatus.Reviewed;
         doc.UpdatedAt = DateTime.UtcNow;

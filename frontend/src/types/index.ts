@@ -38,10 +38,12 @@ export interface DocumentDto {
   updatedAt: string;
 }
 
-export interface UploadDocumentResponse extends DocumentDto {
-  documentId: string;
-  jobId: string;
-  message: string;
+export interface UploadFileResult {
+  fileName: string;
+  success: boolean;
+  error: string | null;
+  document: DocumentDto | null;
+  jobId: string | null;
 }
 
 export interface ExtractedFieldDto {

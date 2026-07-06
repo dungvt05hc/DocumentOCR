@@ -1,5 +1,6 @@
 using DocumentOCR.Application.DTOs;
 using DocumentOCR.Application.Services;
+using DocumentOCR.Domain.Common;
 using DocumentOCR.Infrastructure.Jobs;
 using Hangfire;
 using Microsoft.AspNetCore.Mvc;
@@ -17,7 +18,7 @@ public class DocumentsController : ControllerBase
 
     // For MVP, we use a fixed organization. In a real multi-tenant app,
     // this would come from the authenticated user's claims.
-    private static readonly Guid DefaultOrganizationId = Guid.Parse("00000000-0000-0000-0000-000000000001");
+    private static readonly Guid DefaultOrganizationId = DefaultOrganization.Id;
 
     private static readonly Dictionary<string, string[]> AllowedExtensionsByContentType =
         new(StringComparer.OrdinalIgnoreCase)
@@ -61,16 +62,23 @@ public class DocumentsController : ControllerBase
         if (files is null || files.Count == 0)
             return BadRequest(new { error = "No files provided." });
 
-        var results = new List<object>();
-
+        // Each file is validated and persisted independently: an invalid or failing
+        // file must not block, or silently discard, the others in the same batch.
+        var results = new List<UploadFileResult>();
         foreach (var file in files)
+            results.Add(await UploadSingleFileAsync(file, ct));
+
+        return Accepted(results);
+    }
+
+    private async Task<UploadFileResult> UploadSingleFileAsync(IFormFile file, CancellationToken ct)
+    {
+        var validationError = ValidateUpload(file) ?? await ValidateFileSignatureAsync(file, ct);
+        if (validationError is not null)
+            return new UploadFileResult { FileName = file.FileName, Success = false, Error = validationError };
+
+        try
         {
-            var validationError = ValidateUpload(file);
-            if (validationError is not null) return BadRequest(new { error = validationError });
-
-            validationError = await ValidateFileSignatureAsync(file, ct);
-            if (validationError is not null) return BadRequest(new { error = validationError });
-
             await using var stream = file.OpenReadStream();
             var dto = await _documentService.UploadAsync(
                 stream,
@@ -91,27 +99,28 @@ public class DocumentsController : ControllerBase
                 dto.FileSizeBytes,
                 jobId);
 
-            results.Add(new
+            return new UploadFileResult
             {
-                dto.Id,
-                DocumentId = dto.Id,
-                dto.OriginalFileName,
-                dto.ContentType,
-                dto.FileSizeBytes,
-                dto.PageCount,
-                dto.Status,
-                dto.DocumentType,
-                dto.ErrorMessage,
-                dto.ProcessingStartedAt,
-                dto.ProcessingCompletedAt,
-                dto.CreatedAt,
-                dto.UpdatedAt,
-                JobId = jobId,
-                Message = "Document uploaded. OCR processing has been enqueued."
-            });
+                FileName = file.FileName,
+                Success = true,
+                Document = dto,
+                JobId = jobId
+            };
         }
-
-        return Accepted(results);
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to save uploaded file '{FileName}'", file.FileName);
+            return new UploadFileResult
+            {
+                FileName = file.FileName,
+                Success = false,
+                Error = "Failed to save the uploaded file. Please try again."
+            };
+        }
     }
 
     // GET /api/documents
@@ -178,10 +187,10 @@ public class DocumentsController : ControllerBase
     private static string? ValidateUpload(IFormFile file)
     {
         if (file.Length == 0)
-            return $"File '{file.FileName}' is empty.";
+            return "File is empty.";
 
         if (file.Length > MaxFileSizeBytes)
-            return $"File '{file.FileName}' exceeds the 20 MB limit.";
+            return "File exceeds the 20 MB limit.";
 
         if (!AllowedExtensionsByContentType.TryGetValue(file.ContentType, out var allowedExtensions))
             return $"File type '{file.ContentType}' is not supported. Allowed: PDF, JPEG, PNG.";
@@ -206,7 +215,7 @@ public class DocumentsController : ControllerBase
         var bytesRead = await stream.ReadAsync(header.AsMemory(0, header.Length), ct);
 
         if (bytesRead < signature.Length || !header.AsSpan(0, signature.Length).SequenceEqual(signature))
-            return $"File '{file.FileName}' does not match the expected format for '{file.ContentType}'.";
+            return $"File does not match the expected format for '{file.ContentType}'.";
 
         return null;
     }

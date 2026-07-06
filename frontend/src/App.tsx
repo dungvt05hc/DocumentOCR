@@ -5,7 +5,7 @@ import { ExportPanel } from './components/ExportPanel';
 import { FieldEditor } from './components/FieldEditor';
 import { UploadZone } from './components/UploadZone';
 import { getDocumentById, getDocuments, triggerProcessing } from './services/api';
-import type { DocumentDetailDto, DocumentDto, DocumentStatus, UploadDocumentResponse } from './types';
+import type { DocumentDetailDto, DocumentDto, DocumentStatus, UploadFileResult } from './types';
 
 type Page = 'upload' | 'documents' | 'export';
 type View = Page | 'review';
@@ -53,7 +53,7 @@ export default function App() {
     [documents, statusFilter]
   );
 
-  const handleUploaded = async (_uploaded: UploadDocumentResponse[]) => {
+  const handleUploaded = async (_uploaded: UploadFileResult[]) => {
     await loadDocuments();
     setView('documents');
   };

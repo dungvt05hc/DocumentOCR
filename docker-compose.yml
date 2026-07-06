@@ -5,7 +5,7 @@ services:
     environment:
       POSTGRES_DB: document_ocr
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_PASSWORD: d0cument0cr2026
     ports:
       - "5432:5432"
     volumes:
@@ -24,7 +24,7 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ConnectionStrings__DefaultConnection: >
-        Host=postgres;Port=5432;Database=document_ocr;Username=postgres;Password=${POSTGRES_PASSWORD:-changeme}
+        Host=postgres;Port=5432;Database=document_ocr;Username=postgres;Password=d0cument0cr2026
       Storage__BasePath: /app/uploads
       AzureDocumentIntelligence__Endpoint: ${AZURE_DOC_INTELLIGENCE_ENDPOINT}
       AzureDocumentIntelligence__ApiKey: ${AZURE_DOC_INTELLIGENCE_KEY}

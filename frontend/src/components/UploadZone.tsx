@@ -1,9 +1,9 @@
 import { useCallback, useRef, useState } from 'react';
 import { uploadDocuments } from '../services/api';
-import type { UploadDocumentResponse } from '../types';
+import type { UploadFileResult } from '../types';
 
 interface Props {
-  onUploaded: (docs: UploadDocumentResponse[]) => void;
+  onUploaded: (results: UploadFileResult[]) => void;
 }
 
 const allowedTypes = ['application/pdf', 'image/jpeg', 'image/png'];
@@ -21,23 +21,49 @@ export function UploadZone({ onUploaded }: Props) {
       if (!files || files.length === 0) return;
 
       const fileList = Array.from(files);
-      const invalid = fileList.find(
+      // Files that obviously can't succeed (wrong type/too large) are skipped
+      // client-side, but one bad file must not block the valid ones in the
+      // same batch from being uploaded.
+      const skipped = fileList.filter(
         (file) => !allowedTypes.includes(file.type) || file.size > maxFileSizeBytes
       );
+      const toUpload = fileList.filter((file) => !skipped.includes(file));
 
-      if (invalid) {
+      if (toUpload.length === 0) {
         setError('Use PDF, JPG, or PNG files up to 20 MB each.');
         return;
       }
 
       setUploading(true);
       setProgress(0);
-      setError(null);
+      setError(
+        skipped.length > 0
+          ? `Skipped ${skipped.length} file(s): must be PDF, JPG, or PNG up to 20 MB.`
+          : null
+      );
 
       try {
-        const response = await uploadDocuments(fileList, setProgress);
+        const response = await uploadDocuments(toUpload, setProgress);
         setProgress(100);
-        onUploaded(response.data);
+
+        const failed = response.data.filter((result) => !result.success);
+        if (failed.length > 0) {
+          setError(
+            [
+              skipped.length > 0
+                ? `Skipped ${skipped.length} file(s): must be PDF, JPG, or PNG up to 20 MB.`
+                : null,
+              `${failed.length} of ${response.data.length} file(s) failed: ` +
+                failed.map((result) => `${result.fileName} (${result.error})`).join('; '),
+            ]
+              .filter(Boolean)
+              .join(' ')
+          );
+        }
+
+        if (response.data.some((result) => result.success)) {
+          onUploaded(response.data);
+        }
       } catch {
         setError('Upload failed. Please try again.');
       } finally {
