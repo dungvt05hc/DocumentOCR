@@ -92,8 +92,9 @@ public class DocumentProcessingService : IDocumentProcessingService
             var ocrResult = await _ocrProvider.AnalyzeAsync(ocrInput, ct);
 
             _logger.LogInformation(
-                "OCR provider {ProviderName} completed for document {DocumentId}. Success={Success}, Pages={PageCount}, DurationMs={ProcessingTimeMs}, EstimatedCost={EstimatedCost}",
+                "OCR provider {ProviderName} (Model={ModelId}) completed for document {DocumentId}. Success={Success}, Pages={PageCount}, DurationMs={ProcessingTimeMs}, EstimatedCost={EstimatedCost}",
                 _ocrProvider.ProviderName,
+                ocrResult.ModelId,
                 documentId,
                 ocrResult.Success,
                 ocrResult.PageCount,
@@ -104,11 +105,13 @@ public class DocumentProcessingService : IDocumentProcessingService
             {
                 DocumentId = documentId,
                 ProviderName = _ocrProvider.ProviderName,
+                ModelId = ocrResult.ModelId,
                 PageCount = ocrResult.PageCount,
                 ProcessingTimeMs = ocrResult.ProcessingTimeMs,
                 EstimatedCost = ocrResult.EstimatedCost,
                 Success = ocrResult.Success,
-                ErrorMessage = ocrResult.ErrorMessage
+                ErrorMessage = ocrResult.ErrorMessage,
+                RawResponseJson = ocrResult.RawProviderResponseJson
             });
 
             if (!ocrResult.Success)

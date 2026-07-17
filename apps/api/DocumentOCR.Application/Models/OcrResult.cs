@@ -22,6 +22,9 @@ public sealed class OcrResult
     public double ProcessingTimeMs { get; init; }
     public decimal EstimatedCost { get; init; }
 
+    /// <summary>Provider-specific model identifier used for this analysis (e.g. "prebuilt-invoice", "Fake").</summary>
+    public string? ModelId { get; init; }
+
     /// <summary>
     /// Raw provider response serialized as JSON — kept for debugging and auditability.
     /// Do NOT use for business logic; parse the structured fields above instead.

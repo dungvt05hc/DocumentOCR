@@ -36,8 +36,19 @@ public static class DependencyInjection
         // ── OCR provider ─────────────────────────────────────────────────────────
         services.Configure<AzureOcrOptions>(
             configuration.GetSection(AzureOcrOptions.SectionName));
-        // Registered as Singleton: DocumentIntelligenceClient is thread-safe and designed for reuse.
-        services.AddSingleton<IDocumentOcrProvider, AzureDocumentIntelligenceProvider>();
+
+        // Selected via "Ocr:Provider" config ("Fake" | "Azure"); defaults to Fake so
+        // local/test environments never accidentally call Azure without opting in.
+        var ocrProvider = configuration["Ocr:Provider"];
+        if (string.Equals(ocrProvider, "Azure", StringComparison.OrdinalIgnoreCase))
+        {
+            // Registered as Singleton: DocumentIntelligenceClient is thread-safe and designed for reuse.
+            services.AddSingleton<IDocumentOcrProvider, AzureDocumentIntelligenceProvider>();
+        }
+        else
+        {
+            services.AddSingleton<IDocumentOcrProvider, FakeOcrProvider>();
+        }
 
         // ── Processing pipeline ──────────────────────────────────────────────────
         services.AddScoped<IFieldExtractionService, FieldExtractionService>();

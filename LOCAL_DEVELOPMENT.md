@@ -65,17 +65,32 @@ Set `AzureDocumentIntelligence:DefaultModelId` (or the equivalent env var) to on
 
 ---
 
-### Developing without an Azure account
+### Choosing a provider: `Ocr:Provider`
 
-Leave `Endpoint` and `ApiKey` empty. `AzureDocumentIntelligenceProvider` will log a warning and return an error result.  
-To process documents locally without any cloud dependency, swap the DI registration in `DependencyInjection.cs`:
+Which `IDocumentOcrProvider` gets registered is controlled by configuration, not code:
 
-```csharp
-// In DependencyInjection.cs — for local dev only, do not merge to main
-services.AddSingleton<IDocumentOcrProvider, FakeOcrProvider>();
+```json
+"Ocr": {
+  "Provider": "Fake"
+}
 ```
 
-`FakeOcrProvider` returns a deterministic Vietnamese invoice result with no network calls.
+| Value | Behavior |
+|---|---|
+| `Fake` (default) | `FakeOcrProvider` — deterministic Vietnamese invoice result, no network calls, no credentials needed. |
+| `Azure` | `AzureDocumentIntelligenceProvider` — requires `Endpoint`/`ApiKey` below. |
+
+Override locally without editing `appsettings.json`:
+
+```bash
+# dotnet user-secrets
+dotnet user-secrets set "Ocr:Provider" "Azure"
+
+# or environment variable
+export Ocr__Provider="Azure"
+```
+
+If `Ocr:Provider` is `Azure` but `Endpoint`/`ApiKey` are empty, `AzureDocumentIntelligenceProvider` logs a warning and returns an error result rather than throwing — it never crashes the app at startup.
 
 ---
 
@@ -93,3 +108,24 @@ These settings have sensible defaults and rarely need changing:
 ```
 
 The SDK retries only **transient** failures (HTTP 429, 503, network errors). Authentication errors (401/403) and bad requests (400) are never retried.
+
+---
+
+### Manual test: processing one real invoice through Azure
+
+Use this to verify the Azure path end-to-end before relying on it.
+
+1. Set credentials (Option 1 or 2 above) and set the provider to Azure:
+   ```bash
+   dotnet user-secrets set "Ocr:Provider" "Azure"
+   ```
+2. Start Postgres and the API (`dotnet run --project apps/api/DocumentOCR.WebApi`).
+3. Open Swagger (`/swagger`) and `POST /api/documents` with one sample Vietnamese invoice (PDF or JPG/PNG, < 20 MB).
+4. Confirm the response has `status: "Uploaded"` and note the returned `documentId`.
+5. Open the Hangfire dashboard (`/hangfire`, local-only) and confirm `DocumentProcessingJob` ran and succeeded for that document.
+6. Watch the API console/log output for:
+   - `Calling OCR provider AzureDocumentIntelligence for document <id>`
+   - `OCR provider AzureDocumentIntelligence (Model=prebuilt-invoice) completed for document <id>. Success=True, Pages=1, ...`
+7. `GET /api/documents/{documentId}` and confirm `status` is `Processed` and extracted fields (SupplierName, InvoiceNumber, TotalAmount, etc.) are populated with plausible values.
+8. Inspect the `OcrProviderLogs` table for that document (`SELECT * FROM "OcrProviderLogs" WHERE "DocumentId" = '<id>'`) and confirm `ProviderName`, `ModelId`, `PageCount`, `ProcessingTimeMs`, `EstimatedCost` and `RawResponseJson` are populated — `RawResponseJson` is the raw Azure response, useful for debugging field-mapping issues without re-calling Azure.
+9. Switch `Ocr:Provider` back to `Fake` when done, so subsequent local runs don't incur Azure costs.

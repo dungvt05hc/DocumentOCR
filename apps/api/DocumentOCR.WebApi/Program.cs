@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
 using DocumentOCR.Infrastructure;
 using DocumentOCR.WebApi.Authorization;
@@ -9,7 +10,11 @@ using Microsoft.AspNetCore.RateLimiting;
 var builder = WebApplication.CreateBuilder(args);
 
 // ── Services ──────────────────────────────────────────────────────────────────
-builder.Services.AddControllers();
+// Serialize enums (DocumentStatus, DocumentType, FieldName, ...) as strings so the
+// frontend's string-literal types (e.g. DocumentStatus = 'Uploaded' | 'Failed' | ...) match.
+builder.Services.AddControllers()
+    .AddJsonOptions(options =>
+        options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {

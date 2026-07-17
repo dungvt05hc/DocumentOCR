@@ -113,6 +113,7 @@ public sealed class AzureDocumentIntelligenceProvider : IDocumentOcrProvider
                 PageCount = pageCount,
                 ProcessingTimeMs = sw.Elapsed.TotalMilliseconds,
                 EstimatedCost = CalculateCost(pageCount),
+                ModelId = _options.DefaultModelId,
                 RawProviderResponseJson = rawJson
             };
         }
@@ -343,10 +344,11 @@ public sealed class AzureDocumentIntelligenceProvider : IDocumentOcrProvider
         return pageCount * pricePerPage;
     }
 
-    private static OcrResult Failure(string message, double processingTimeMs) => new()
+    private OcrResult Failure(string message, double processingTimeMs) => new()
     {
         Success = false,
         ErrorMessage = message,
-        ProcessingTimeMs = processingTimeMs
+        ProcessingTimeMs = processingTimeMs,
+        ModelId = _options.DefaultModelId
     };
 }

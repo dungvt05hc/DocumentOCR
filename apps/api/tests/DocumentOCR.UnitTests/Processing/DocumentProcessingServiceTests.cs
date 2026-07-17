@@ -52,6 +52,7 @@ public class DocumentProcessingServiceTests
 
         var log = Assert.Single(reloaded.OcrProviderLogs);
         Assert.Equal("Fake", log.ProviderName);
+        Assert.Equal("Fake", log.ModelId);
         Assert.True(log.Success);
     }
 

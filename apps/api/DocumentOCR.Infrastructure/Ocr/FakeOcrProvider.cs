@@ -38,6 +38,7 @@ public sealed class FakeOcrProvider : IDocumentOcrProvider
             PageCount = 1,
             ProcessingTimeMs = 0,
             EstimatedCost = 0m,
+            ModelId = "Fake",
             RawProviderResponseJson = null
         });
     }

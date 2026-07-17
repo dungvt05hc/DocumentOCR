@@ -4,10 +4,10 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-echo "==> SafeFamily — Starting dev servers"
+echo "==> DocumentOCR — Starting dev servers"
 echo "    Frontend : http://localhost:5173"
-echo "    API      : http://localhost:5050"
-echo "    Swagger  : http://localhost:5050/swagger"
+echo "    API      : http://localhost:5282"
+echo "    Swagger  : http://localhost:5282/swagger"
 echo ""
 
 # Start PostgreSQL if not running
@@ -15,7 +15,7 @@ docker compose -f "$ROOT/docker-compose.yml" up -d postgres
 
 # Start API in background
 echo "[api] Starting ASP.NET Core..."
-cd "$ROOT/apps/api/SafeFamily.Api"
+cd "$ROOT/apps/api/DocumentOCR.WebApi"
 dotnet run --launch-profile http &
 API_PID=$!
 
