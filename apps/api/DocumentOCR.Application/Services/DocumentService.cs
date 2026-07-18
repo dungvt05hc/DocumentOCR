@@ -180,6 +180,8 @@ public class DocumentService
             NormalizedValue = f.NormalizedValue,
             Confidence = f.Confidence,
             PageNumber = f.PageNumber,
+            ExtractionMethod = f.ExtractionMethod,
+            SourceText = f.SourceText,
             IsRequired = f.IsRequired,
             IsEditedByUser = f.IsEditedByUser,
             EditedAt = f.EditedAt

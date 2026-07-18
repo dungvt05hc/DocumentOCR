@@ -29,6 +29,30 @@ internal static class VietnameseMvpTestData
         "Tổng cộng: 550.000 VND"
     ];
 
+    /// <summary>
+    /// A real POS sales-receipt shape: no explicit "Đơn vị bán hàng"/"Tổng cộng" labels, a bare
+    /// "Tổng:" total line, and a "HÓA ĐƠN BÁN HÀNG" title (sales receipt, not a VAT invoice).
+    /// </summary>
+    public static readonly string[] MotaCafeReceiptLines =
+    [
+        "MOTA CAFE",
+        "272 HÀ HUY TẬP - TP. HÀ TĨNH",
+        "0911586768",
+        "HÓA ĐƠN BÁN HÀNG",
+        "Ngày 17/11/18",
+        "Số: 111800005",
+        "BÀN 02",
+        "Thu ngân: Administrator",
+        "Giờ vào: 17:17",
+        "Mặt hàng SL Giá T tiền",
+        "Gold Kiwi Green Tea (Trà Kiwi) 1 35.000 35.000",
+        "Trà sữa vị hạt dẻ 1 30.000 30.000",
+        "Trà sữa vị phúc bồn tử 1 30.000 30.000",
+        "Tiền hàng: 95.000",
+        "Giảm 10%: 10.000",
+        "Tổng: 85.000"
+    ];
+
     public static OcrResult OcrFromLines(params string[] lines)
     {
         var ocrLines = lines

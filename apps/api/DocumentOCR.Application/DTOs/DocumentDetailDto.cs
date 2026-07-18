@@ -17,6 +17,8 @@ public class ExtractedFieldDto
     public string? NormalizedValue { get; set; }
     public double? Confidence { get; set; }
     public int? PageNumber { get; set; }
+    public string? ExtractionMethod { get; set; }
+    public string? SourceText { get; set; }
     public bool IsRequired { get; set; }
     public bool IsEditedByUser { get; set; }
     public DateTime? EditedAt { get; set; }

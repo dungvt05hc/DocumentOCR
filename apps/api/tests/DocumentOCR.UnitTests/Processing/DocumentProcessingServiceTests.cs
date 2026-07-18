@@ -49,7 +49,10 @@ public class DocumentProcessingServiceTests
 
         Assert.Contains(reloaded.Fields, f => f.FieldName == nameof(FieldName.SupplierTaxCode) && f.NormalizedValue == "0100109106");
         Assert.Contains(reloaded.Fields, f => f.FieldName == nameof(FieldName.TotalAmount) && f.NormalizedValue == "1236767");
-        Assert.Empty(reloaded.ValidationWarnings);
+        Assert.Contains(reloaded.Fields, f => f.FieldName == nameof(FieldName.Currency) && f.NormalizedValue == "VND");
+        var warning = Assert.Single(reloaded.ValidationWarnings);
+        Assert.Equal(nameof(FieldName.Currency), warning.FieldName);
+        Assert.Equal("LOW_CONFIDENCE", warning.WarningCode);
 
         var log = Assert.Single(reloaded.OcrProviderLogs);
         Assert.Equal("Fake", log.ProviderName);

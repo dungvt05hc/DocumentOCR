@@ -18,6 +18,18 @@ public sealed class OcrResult
     /// <summary>Structured key-value fields extracted across all pages.</summary>
     public IReadOnlyList<OcrFieldCandidate> Fields { get; init; } = [];
 
+    /// <summary>Tables detected by the provider's layout analysis (not wired into field extraction yet).</summary>
+    public IReadOnlyList<OcrTableResult> Tables { get; init; } = [];
+
+    /// <summary>Paragraphs detected by the provider's layout analysis, with roles when available.</summary>
+    public IReadOnlyList<OcrParagraphResult> Paragraphs { get; init; } = [];
+
+    /// <summary>Generic key-value pairs from the provider's "keyValuePairs" add-on feature, when enabled.</summary>
+    public IReadOnlyList<OcrKeyValuePairResult> KeyValuePairs { get; init; } = [];
+
+    /// <summary>Add-on features that were requested for this analysis (e.g. "keyValuePairs").</summary>
+    public IReadOnlyList<string> Features { get; init; } = [];
+
     public int PageCount { get; init; }
     public double ProcessingTimeMs { get; init; }
     public decimal EstimatedCost { get; init; }

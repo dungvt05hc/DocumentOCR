@@ -49,27 +49,37 @@ public partial class FieldExtractionService : IFieldExtractionService
 
     private static readonly string[] InvoiceNumberKeywords =
     [
-        "so hoa don", "so hd", "invoice no", "invoice number", "so"
+        "so hoa don", "so hd", "so phieu", "ma hd", "invoice no", "invoice number", "so"
     ];
 
     private static readonly string[] InvoiceDateKeywords =
     [
-        "ngay hoa don", "invoice date", "ngay"
+        "ngay hoa don", "ngay tao", "invoice date", "ngay"
     ];
 
     private static readonly string[] SubtotalKeywords =
     [
-        "cong tien hang", "subtotal", "thanh tien chua thue", "tien hang"
+        "cong tien hang", "subtotal", "thanh tien chua thue", "tien hang", "thanh tien", "tam tinh"
     ];
 
     private static readonly string[] VatKeywords =
     [
-        "vat", "thue gtgt", "gtgt"
+        "vat", "thue gtgt", "tien thue gtgt", "gtgt"
     ];
 
-    private static readonly string[] TotalKeywords =
+    /// <summary>
+    /// TotalAmount keyword strength, weakest to strongest. A bare "Tổng" is a valid but weak
+    /// signal; more specific phrasing like "Tổng thanh toán" should win when both are present
+    /// on the same document.
+    /// </summary>
+    private static readonly (string Keyword, int Weight)[] TotalKeywordWeights =
     [
-        "tong thanh toan", "tong cong tien thanh toan", "tong tien", "tong cong", "thanh tien"
+        ("tong thanh toan", 3),
+        ("tong cong tien thanh toan", 3),
+        ("tong cong", 2),
+        ("tong tien", 2),
+        ("thanh toan", 2),
+        ("tong", 1)
     ];
 
     private static readonly string[] NotesKeywords =
@@ -82,6 +92,18 @@ public partial class FieldExtractionService : IFieldExtractionService
         "cong ty", "cty", "tnhh", "co phan", "doanh nghiep", "hop tac xa"
     ];
 
+    /// <summary>
+    /// Lines that look like an address, phone number, date, or document-type title are not
+    /// merchant-name candidates for the top-line supplier heuristic even though they may sit
+    /// above the first genuinely useful field on a POS receipt.
+    /// </summary>
+    private static readonly string[] AddressMarkers =
+    [
+        "tp.", "thanh pho", "phuong", "quan", "huyen", "tinh", "duong", "so nha"
+    ];
+
+    private const int TopLineSupplierScanWindow = 6;
+
     public IReadOnlyList<ExtractedField> Extract(Guid documentId, OcrResult ocrResult)
     {
         ArgumentNullException.ThrowIfNull(ocrResult);
@@ -91,9 +113,11 @@ public partial class FieldExtractionService : IFieldExtractionService
 
         var lines = BuildLineContexts(ocrResult);
         AddLineCandidates(lines, candidates);
+        AddSupplierNameTopLineCandidate(lines, candidates);
         AddFullTextFallbackCandidates(ocrResult, candidates);
         AddDocumentTypeCandidate(ocrResult, lines, candidates);
         AddCurrencyCandidate(ocrResult, lines, candidates);
+        AddDefaultCurrencyCandidate(candidates);
 
         return candidates
             .Where(c => !string.IsNullOrWhiteSpace(c.RawValue))
@@ -109,7 +133,9 @@ public partial class FieldExtractionService : IFieldExtractionService
                 RawValue = c.RawValue?.Trim(),
                 Confidence = c.Confidence,
                 PageNumber = c.PageNumber,
-                BoundingBoxJson = c.BoundingBox is null ? null : JsonSerializer.Serialize(c.BoundingBox)
+                BoundingBoxJson = c.BoundingBox is null ? null : JsonSerializer.Serialize(c.BoundingBox),
+                ExtractionMethod = c.SourceMethod,
+                SourceText = Truncate(c.SourceText, 300)
             })
             .ToList();
     }
@@ -127,7 +153,9 @@ public partial class FieldExtractionService : IFieldExtractionService
                 ocrField.Confidence ?? 0.9,
                 ocrField.PageNumber,
                 ocrField.BoundingBox,
-                SourcePriority: 100));
+                SourcePriority: 100,
+                SourceMethod: "StructuredField",
+                SourceText: ocrField.Value));
         }
     }
 
@@ -173,7 +201,9 @@ public partial class FieldExtractionService : IFieldExtractionService
                     Score(line, 0.72),
                     line.PageNumber,
                     line.BoundingBox,
-                    SourcePriority: 30));
+                    SourcePriority: 30,
+                    SourceMethod: "SupplierMarker",
+                    SourceText: line.Text));
             }
         }
     }
@@ -200,7 +230,62 @@ public partial class FieldExtractionService : IFieldExtractionService
             Score(line, 0.88),
             line.PageNumber,
             line.BoundingBox,
-            SourcePriority: 60));
+            SourcePriority: 60,
+            SourceMethod: "LineKeyword",
+            SourceText: line.Text));
+    }
+
+    /// <summary>
+    /// POS/sales receipts often print the merchant name as the very first line with no label
+    /// at all (e.g. "MOTA CAFE"). This scans the first few lines for the first one that isn't
+    /// an address, phone number, date, invoice number, or document-type title, and uses it as
+    /// a low-priority SupplierName candidate — only relevant when no labeled candidate exists.
+    /// </summary>
+    private static void AddSupplierNameTopLineCandidate(
+        IReadOnlyList<LineContext> lines,
+        List<FieldCandidate> candidates)
+    {
+        var scanCount = Math.Min(lines.Count, TopLineSupplierScanWindow);
+        for (var i = 0; i < scanCount; i++)
+        {
+            var line = lines[i];
+            if (!IsLikelySupplierNameLine(line)) continue;
+
+            candidates.Add(new FieldCandidate(
+                nameof(FieldName.SupplierName),
+                CleanValue(line.Text),
+                Score(line, 0.68),
+                line.PageNumber,
+                line.BoundingBox,
+                SourcePriority: 20,
+                SourceMethod: "SupplierTopLine",
+                SourceText: line.Text));
+            return;
+        }
+    }
+
+    private static bool IsLikelySupplierNameLine(LineContext line)
+    {
+        var text = line.Text.Trim();
+        if (text.Length < 3) return false;
+        if (!text.Any(char.IsLetter)) return false;
+
+        if (ContainsAny(line.SearchText, TaxCodeKeywords)) return false;
+        if (ContainsAny(line.SearchText, InvoiceNumberKeywords)) return false;
+        if (ContainsAny(line.SearchText, InvoiceDateKeywords)) return false;
+        if (ContainsAny(line.SearchText, SupplierKeywords)) return false;
+        if (ContainsAny(line.SearchText, NotesKeywords)) return false;
+        if (ContainsAny(line.SearchText, AddressMarkers)) return false;
+
+        if (InvoiceDocumentPattern().IsMatch(text) || ReceiptDocumentPattern().IsMatch(text)) return false;
+        if (DateValuePattern().IsMatch(text)) return false;
+        if (char.IsDigit(text[0])) return false;
+
+        var digitCount = text.Count(char.IsDigit);
+        var significantCount = text.Count(c => !char.IsWhiteSpace(c));
+        if (significantCount > 0 && digitCount / (double)significantCount > 0.5) return false;
+
+        return true;
     }
 
     private static void AddTaxCodeLineCandidate(
@@ -225,7 +310,9 @@ public partial class FieldExtractionService : IFieldExtractionService
             Score(line, 0.9),
             line.PageNumber,
             line.BoundingBox,
-            SourcePriority: 70));
+            SourcePriority: 70,
+            SourceMethod: "LineKeyword",
+            SourceText: line.Text));
     }
 
     private static void AddInvoiceNumberLineCandidate(
@@ -251,7 +338,9 @@ public partial class FieldExtractionService : IFieldExtractionService
             Score(line, line.SearchText == "so" ? 0.72 : 0.86),
             line.PageNumber,
             line.BoundingBox,
-            SourcePriority: 55));
+            SourcePriority: 55,
+            SourceMethod: "LineKeyword",
+            SourceText: line.Text));
     }
 
     private static void AddInvoiceDateLineCandidate(
@@ -276,7 +365,9 @@ public partial class FieldExtractionService : IFieldExtractionService
             Score(line, 0.86),
             line.PageNumber,
             line.BoundingBox,
-            SourcePriority: 55));
+            SourcePriority: 55,
+            SourceMethod: "LineKeyword",
+            SourceText: line.Text));
     }
 
     private static void AddAmountLineCandidates(
@@ -289,21 +380,33 @@ public partial class FieldExtractionService : IFieldExtractionService
         if (fieldName is null) return;
 
         var value = LastMoneyValue(line.Text);
+        var sourceLine = line;
         if (string.IsNullOrWhiteSpace(value) && TryGetNearbyLine(lines, index, out var nearby))
         {
             value = LastMoneyValue(nearby.Text);
+            sourceLine = nearby;
         }
 
         if (string.IsNullOrWhiteSpace(value)) return;
 
         var baseScore = fieldName == nameof(FieldName.TotalAmount) ? 0.88 : 0.84;
+        if (fieldName == nameof(FieldName.TotalAmount))
+        {
+            var weight = GetTotalKeywordWeight(line.SearchText);
+            var keywordBonus = (weight - 1) * 0.03;
+            var positionBonus = lines.Count > 1 ? index / (double)(lines.Count - 1) * 0.05 : 0;
+            baseScore = Math.Min(0.97, baseScore + keywordBonus + positionBonus);
+        }
+
         candidates.Add(new FieldCandidate(
             fieldName,
             value,
             Score(line, baseScore),
             line.PageNumber,
             line.BoundingBox,
-            SourcePriority: 65));
+            SourcePriority: 65,
+            SourceMethod: "LineKeyword",
+            SourceText: sourceLine.Text));
     }
 
     private static void AddNotesLineCandidate(
@@ -328,7 +431,9 @@ public partial class FieldExtractionService : IFieldExtractionService
             Score(line, 0.78),
             line.PageNumber,
             line.BoundingBox,
-            SourcePriority: 35));
+            SourcePriority: 35,
+            SourceMethod: "LineKeyword",
+            SourceText: line.Text));
     }
 
     private static void AddFullTextFallbackCandidates(OcrResult ocrResult, List<FieldCandidate> candidates)
@@ -359,7 +464,11 @@ public partial class FieldExtractionService : IFieldExtractionService
             ? match.Groups[^1].Value
             : match.Groups.Count > 1 ? match.Groups[1].Value : match.Value;
 
-        candidates.Add(new FieldCandidate(fieldName, value, confidence, null, null, SourcePriority: 10));
+        candidates.Add(new FieldCandidate(
+            fieldName, value, confidence, null, null,
+            SourcePriority: 10,
+            SourceMethod: "FullTextRegex",
+            SourceText: match.Value));
     }
 
     private static void AddDocumentTypeCandidate(
@@ -379,8 +488,12 @@ public partial class FieldExtractionService : IFieldExtractionService
         if (ReceiptDocumentPattern().IsMatch(originalText)
             || searchText.Contains("bien lai", StringComparison.Ordinal)
             || searchText.Contains("phieu thu", StringComparison.Ordinal)
-            || searchText.Contains("receipt", StringComparison.Ordinal))
+            || searchText.Contains("receipt", StringComparison.Ordinal)
+            || searchText.Contains("hoa don ban hang", StringComparison.Ordinal))
         {
+            // "Hóa đơn bán hàng" (sales receipt) is a POS-style receipt, not a VAT invoice —
+            // classify it as Receipt even though it contains the substring "hóa đơn", so
+            // SupplierTaxCode validation does not wrongly require a tax code for it.
             documentType = nameof(DocumentType.Receipt);
         }
         else if (InvoiceDocumentPattern().IsMatch(originalText)
@@ -398,7 +511,9 @@ public partial class FieldExtractionService : IFieldExtractionService
             0.84,
             lines.FirstOrDefault().PageNumber,
             lines.FirstOrDefault().BoundingBox,
-            SourcePriority: 45));
+            SourcePriority: 45,
+            SourceMethod: "DocumentTypeHeuristic",
+            SourceText: documentType));
     }
 
     private static void AddCurrencyCandidate(
@@ -417,16 +532,60 @@ public partial class FieldExtractionService : IFieldExtractionService
             0.78,
             line.PageNumber,
             line.BoundingBox,
-            SourcePriority: 35));
+            SourcePriority: 35,
+            SourceMethod: "CurrencyHeuristic",
+            SourceText: line.Text));
+    }
+
+    /// <summary>
+    /// Vietnamese invoices/receipts frequently omit any currency marker at all — the grouped
+    /// dot-thousands money format itself is the signal. Only fires when no explicit currency
+    /// candidate was found, and never outranks one (lowest possible priority/confidence).
+    /// </summary>
+    private static void AddDefaultCurrencyCandidate(List<FieldCandidate> candidates)
+    {
+        if (candidates.Any(c => c.FieldName == nameof(FieldName.Currency))) return;
+
+        var hasVietnameseMoneyFormat = candidates
+            .Where(c => c.FieldName is nameof(FieldName.SubtotalAmount)
+                or nameof(FieldName.VatAmount)
+                or nameof(FieldName.TotalAmount))
+            .Any(c => c.RawValue is not null && VietnameseGroupedMoneyPattern().IsMatch(c.RawValue));
+
+        if (!hasVietnameseMoneyFormat) return;
+
+        candidates.Add(new FieldCandidate(
+            nameof(FieldName.Currency),
+            "VND",
+            0.5,
+            null,
+            null,
+            SourcePriority: 5,
+            SourceMethod: "CurrencyDefault",
+            SourceText: null));
     }
 
     private static string? GetAmountFieldName(string searchText)
     {
         if (ContainsAny(searchText, VatKeywords)) return nameof(FieldName.VatAmount);
         if (ContainsAny(searchText, SubtotalKeywords)) return nameof(FieldName.SubtotalAmount);
-        if (ContainsAny(searchText, TotalKeywords)) return nameof(FieldName.TotalAmount);
+        if (TotalKeywordWeights.Any(k => searchText.Contains(k.Keyword, StringComparison.Ordinal))) return nameof(FieldName.TotalAmount);
 
         return null;
+    }
+
+    private static int GetTotalKeywordWeight(string searchText)
+    {
+        var best = 0;
+        foreach (var (keyword, weight) in TotalKeywordWeights)
+        {
+            if (searchText.Contains(keyword, StringComparison.Ordinal) && weight > best)
+            {
+                best = weight;
+            }
+        }
+
+        return best;
     }
 
     private static string? LastMoneyValue(string value)
@@ -482,6 +641,12 @@ public partial class FieldExtractionService : IFieldExtractionService
         return WhitespacePattern().Replace(value.Trim(' ', ':', '-', ';'), " ");
     }
 
+    private static string? Truncate(string? value, int maxLength)
+    {
+        if (value is null) return null;
+        return value.Length <= maxLength ? value : value[..maxLength];
+    }
+
     private static string GetFullText(OcrResult ocrResult)
     {
         if (!string.IsNullOrWhiteSpace(ocrResult.FullText)) return ocrResult.FullText;
@@ -520,7 +685,9 @@ public partial class FieldExtractionService : IFieldExtractionService
         double? Confidence,
         int? PageNumber,
         BoundingBox? BoundingBox,
-        int SourcePriority);
+        int SourcePriority,
+        string SourceMethod,
+        string? SourceText);
 
     private readonly record struct LineContext(
         string Text,
@@ -541,6 +708,9 @@ public partial class FieldExtractionService : IFieldExtractionService
     [GeneratedRegex(@"(?:VND|VNĐ|₫|đ)?\s*\d+(?:[.,\s]\d{3})*(?:[.,]\d+)?\s*(?:VND|VNĐ|₫|đ)?", RegexOptions.IgnoreCase)]
     private static partial Regex MoneyValuePattern();
 
+    [GeneratedRegex(@"^\d{1,3}(?:\.\d{3})+$")]
+    private static partial Regex VietnameseGroupedMoneyPattern();
+
     [GeneratedRegex(@"(?:VND|VNĐ|₫|đồng|dong)", RegexOptions.IgnoreCase)]
     private static partial Regex CurrencyMarkerPattern();
 
@@ -556,13 +726,13 @@ public partial class FieldExtractionService : IFieldExtractionService
     [GeneratedRegex(@"(?:Số\s*hóa\s*đơn|Số\s*HĐ|Invoice\s*(?:No|Number)|Số)\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/.]{2,})", RegexOptions.IgnoreCase)]
     private static partial Regex InvoiceNumberFallbackPattern();
 
-    [GeneratedRegex(@"(?:Tổng\s*thanh\s*toán|Tổng\s*cộng(?:\s*tiền\s*thanh\s*toán)?|Tổng\s*tiền|Thành\s*tiền)\s*[:\-]?\s*((?:VND|VNĐ|₫|đ)?\s*\d+(?:[.,\s]\d{3})*(?:[.,]\d+)?\s*(?:VND|VNĐ|₫|đ)?)", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"(?:Tổng\s*thanh\s*toán|Tổng\s*cộng(?:\s*tiền\s*thanh\s*toán)?|Tổng\s*tiền|Tổng)\s*[:\-]?\s*((?:VND|VNĐ|₫|đ)?\s*\d+(?:[.,\s]\d{3})*(?:[.,]\d+)?\s*(?:VND|VNĐ|₫|đ)?)", RegexOptions.IgnoreCase)]
     private static partial Regex TotalAmountFallbackPattern();
 
     [GeneratedRegex(@"(?:VAT|Thuế\s*GTGT)\D*((?:VND|VNĐ|₫|đ)?\s*\d+(?:[.,\s]\d{3})*(?:[.,]\d+)?\s*(?:VND|VNĐ|₫|đ)?)", RegexOptions.IgnoreCase)]
     private static partial Regex VatAmountFallbackPattern();
 
-    [GeneratedRegex(@"(?:Cộng\s*tiền\s*hàng|Subtotal|Thành\s*tiền\s*chưa\s*thuế)\s*[:\-]?\s*((?:VND|VNĐ|₫|đ)?\s*\d+(?:[.,\s]\d{3})*(?:[.,]\d+)?\s*(?:VND|VNĐ|₫|đ)?)", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"(?:Cộng\s*tiền\s*hàng|Subtotal|Thành\s*tiền\s*chưa\s*thuế|Thành\s*tiền|Tiền\s*hàng)\s*[:\-]?\s*((?:VND|VNĐ|₫|đ)?\s*\d+(?:[.,\s]\d{3})*(?:[.,]\d+)?\s*(?:VND|VNĐ|₫|đ)?)", RegexOptions.IgnoreCase)]
     private static partial Regex SubtotalFallbackPattern();
 
     [GeneratedRegex(@"\s+")]

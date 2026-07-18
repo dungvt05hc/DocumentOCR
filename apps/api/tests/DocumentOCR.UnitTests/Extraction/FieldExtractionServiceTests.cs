@@ -88,7 +88,8 @@ public class FieldExtractionServiceTests
         AssertField(fields, FieldName.SubtotalAmount, "2 000 000");
         AssertField(fields, FieldName.VatAmount, "200 000");
         AssertField(fields, FieldName.TotalAmount, "2 200 000 VND");
-        AssertField(fields, FieldName.DocumentType, nameof(DocumentType.Invoice));
+        // "HÓA ĐƠN BÁN HÀNG" is a sales receipt, not a VAT invoice, despite the "hóa đơn" substring.
+        AssertField(fields, FieldName.DocumentType, nameof(DocumentType.Receipt));
     }
 
     [Fact]
@@ -141,6 +142,46 @@ public class FieldExtractionServiceTests
         AssertField(fields, FieldName.SupplierTaxCode, "0301234567");
         AssertField(fields, FieldName.InvoiceDate, "05-06-2026");
         AssertField(fields, FieldName.TotalAmount, "1.234.567");
+    }
+
+    [Fact]
+    public void Extract_UnlabeledMerchantNameAboveAddressAndPhone_UsesTopLineHeuristic()
+    {
+        var ocr = OcrFromLines(
+            "272 HÀ HUY TẬP - TP. HÀ TĨNH",
+            "0911586768",
+            "HÓA ĐƠN BÁN HÀNG",
+            "MOTA CAFE",
+            "Ngày 17/11/18");
+
+        var fields = _sut.Extract(DocumentId, ocr);
+
+        AssertField(fields, FieldName.SupplierName, "MOTA CAFE");
+    }
+
+    [Fact]
+    public void Extract_BareTongLabel_ExtractsTotalAmount()
+    {
+        var ocr = OcrFromLines(
+            "Tiền hàng: 95.000",
+            "Tổng: 85.000");
+
+        var fields = _sut.Extract(DocumentId, ocr);
+
+        AssertField(fields, FieldName.SubtotalAmount, "95.000");
+        AssertField(fields, FieldName.TotalAmount, "85.000");
+    }
+
+    [Fact]
+    public void Extract_CompetingTotalKeywords_PrefersStrongerKeywordOverWeakerOne()
+    {
+        var ocr = OcrFromLines(
+            "Tổng thanh toán: 60.000",
+            "Tổng: 50.000");
+
+        var fields = _sut.Extract(DocumentId, ocr);
+
+        AssertField(fields, FieldName.TotalAmount, "60.000");
     }
 
     private static OcrResult OcrFromLines(params string[] lines)

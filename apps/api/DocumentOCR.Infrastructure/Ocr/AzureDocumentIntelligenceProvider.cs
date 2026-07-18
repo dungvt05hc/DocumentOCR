@@ -99,9 +99,22 @@ public sealed class AzureDocumentIntelligenceProvider : IDocumentOcrProvider
             var fullText = string.Join("\n", pageResults.Select(p => p.FullText));
             var pageCount = analyzeResult.Pages.Count;
 
+            // Layout extras: captured for diagnostics/future use, not yet consumed by field extraction.
+            var tables = (analyzeResult.Tables ?? [])
+                .Select(BuildTableResult)
+                .ToList();
+            var paragraphs = (analyzeResult.Paragraphs ?? [])
+                .Select(BuildParagraphResult)
+                .ToList();
+            var keyValuePairs = (analyzeResult.KeyValuePairs ?? [])
+                .Select(BuildKeyValuePairResult)
+                .ToList();
+
             _logger.LogInformation(
-                "OCR analysis completed. File={FileName} Pages={PageCount} Fields={FieldCount} Elapsed={ElapsedMs}ms",
-                input.FileName, pageCount, fieldCandidates.Count, sw.Elapsed.TotalMilliseconds);
+                "OCR analysis completed. File={FileName} Pages={PageCount} Fields={FieldCount} Tables={TableCount} " +
+                "Paragraphs={ParagraphCount} KeyValuePairs={KeyValuePairCount} Elapsed={ElapsedMs}ms",
+                input.FileName, pageCount, fieldCandidates.Count, tables.Count, paragraphs.Count,
+                keyValuePairs.Count, sw.Elapsed.TotalMilliseconds);
 
             return new OcrResult
             {
@@ -109,6 +122,10 @@ public sealed class AzureDocumentIntelligenceProvider : IDocumentOcrProvider
                 FullText = fullText,
                 Pages = pageResults,
                 Fields = fieldCandidates,
+                Tables = tables,
+                Paragraphs = paragraphs,
+                KeyValuePairs = keyValuePairs,
+                Features = _options.Features,
                 PageCount = pageCount,
                 ProcessingTimeMs = sw.Elapsed.TotalMilliseconds,
                 EstimatedCost = CalculateCost(pageCount),
@@ -321,6 +338,62 @@ public sealed class AzureDocumentIntelligenceProvider : IDocumentOcrProvider
             Height = page.Height.HasValue ? (double)page.Height.Value : 0,
             Lines = lines,
             Words = pageWords
+        };
+    }
+
+    // Layout extras mapping
+
+    internal static OcrTableResult BuildTableResult(DocumentTable table)
+    {
+        var cells = (table.Cells ?? [])
+            .Select(cell => new OcrTableCellResult
+            {
+                RowIndex = cell.RowIndex,
+                ColumnIndex = cell.ColumnIndex,
+                Content = cell.Content,
+                Kind = cell.Kind?.ToString(),
+                BoundingBox = cell.BoundingRegions is { Count: > 0 }
+                    ? ToPolygonBoundingBox(cell.BoundingRegions[0].Polygon)
+                    : null
+            })
+            .ToList();
+
+        return new OcrTableResult
+        {
+            PageNumber = table.BoundingRegions is { Count: > 0 } ? table.BoundingRegions[0].PageNumber : null,
+            RowCount = table.RowCount,
+            ColumnCount = table.ColumnCount,
+            Cells = cells
+        };
+    }
+
+    internal static OcrParagraphResult BuildParagraphResult(DocumentParagraph paragraph)
+    {
+        return new OcrParagraphResult
+        {
+            Content = paragraph.Content,
+            Role = paragraph.Role?.ToString(),
+            PageNumber = paragraph.BoundingRegions is { Count: > 0 } ? paragraph.BoundingRegions[0].PageNumber : null,
+            BoundingBox = paragraph.BoundingRegions is { Count: > 0 }
+                ? ToPolygonBoundingBox(paragraph.BoundingRegions[0].Polygon)
+                : null
+        };
+    }
+
+    internal static OcrKeyValuePairResult BuildKeyValuePairResult(DocumentKeyValuePair kvp)
+    {
+        return new OcrKeyValuePairResult
+        {
+            Key = kvp.Key.Content,
+            Value = kvp.Value?.Content,
+            Confidence = kvp.Confidence,
+            PageNumber = kvp.Key.BoundingRegions is { Count: > 0 } ? kvp.Key.BoundingRegions[0].PageNumber : null,
+            KeyBoundingBox = kvp.Key.BoundingRegions is { Count: > 0 }
+                ? ToPolygonBoundingBox(kvp.Key.BoundingRegions[0].Polygon)
+                : null,
+            ValueBoundingBox = kvp.Value?.BoundingRegions is { Count: > 0 }
+                ? ToPolygonBoundingBox(kvp.Value.BoundingRegions[0].Polygon)
+                : null
         };
     }
 

@@ -15,6 +15,13 @@ public class ExtractedField : BaseEntity
 
     public int? PageNumber { get; set; }
     public string? BoundingBoxJson { get; set; }
+
+    /// <summary>Which extraction strategy produced the winning value (e.g. "StructuredField", "LineKeyword", "FullTextRegex").</summary>
+    public string? ExtractionMethod { get; set; }
+
+    /// <summary>The raw line/text the winning candidate was derived from, for debugging and audit.</summary>
+    public string? SourceText { get; set; }
+
     public bool IsRequired { get; set; }
     public bool IsEditedByUser { get; set; }
     public DateTime? EditedAt { get; set; }
