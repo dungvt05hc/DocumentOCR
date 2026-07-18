@@ -10,6 +10,10 @@ obj/
 apps/api/DocumentOCR.WebApi/uploads/
 C:/DocumentOCR/
 
+# OCR benchmark tool (dev-only) — never commit sample invoices or raw OCR output
+apps/api/tools/DocumentOCR.OcrBenchmark/data/
+apps/api/tools/DocumentOCR.OcrBenchmark/benchmark-output/
+
 # Environment variables with secrets — use .env.local or environment vars
 appsettings.Local.json
 .env

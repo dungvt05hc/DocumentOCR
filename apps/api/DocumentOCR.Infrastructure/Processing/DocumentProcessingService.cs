@@ -2,8 +2,10 @@ using DocumentOCR.Application.Interfaces;
 using DocumentOCR.Application.Models;
 using DocumentOCR.Domain.Entities;
 using DocumentOCR.Domain.Enums;
+using DocumentOCR.Infrastructure.Ocr;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace DocumentOCR.Infrastructure.Processing;
 
@@ -18,6 +20,7 @@ public class DocumentProcessingService : IDocumentProcessingService
     private readonly IFieldExtractionService _extraction;
     private readonly IFieldNormalizationService _normalization;
     private readonly IFieldValidationService _validation;
+    private readonly OcrOptions _ocrOptions;
     private readonly ILogger<DocumentProcessingService> _logger;
 
     public DocumentProcessingService(
@@ -27,6 +30,7 @@ public class DocumentProcessingService : IDocumentProcessingService
         IFieldExtractionService extraction,
         IFieldNormalizationService normalization,
         IFieldValidationService validation,
+        IOptions<OcrOptions> ocrOptions,
         ILogger<DocumentProcessingService> logger)
     {
         _db = db;
@@ -35,6 +39,7 @@ public class DocumentProcessingService : IDocumentProcessingService
         _extraction = extraction;
         _normalization = normalization;
         _validation = validation;
+        _ocrOptions = ocrOptions.Value;
         _logger = logger;
     }
 
@@ -111,7 +116,7 @@ public class DocumentProcessingService : IDocumentProcessingService
                 EstimatedCost = ocrResult.EstimatedCost,
                 Success = ocrResult.Success,
                 ErrorMessage = ocrResult.ErrorMessage,
-                RawResponseJson = ocrResult.RawProviderResponseJson
+                RawResponseJson = _ocrOptions.StoreRawProviderResponse ? ocrResult.RawProviderResponseJson : null
             });
 
             if (!ocrResult.Success)

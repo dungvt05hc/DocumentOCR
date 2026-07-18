@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- Intentionally the same UserSecretsId as DocumentOCR.WebApi, so this dev-only tool
+         reads the same local Azure Document Intelligence credentials without requiring the
+         developer to configure them twice. -->
+    <UserSecretsId>9bf79bd7-8593-4934-b2ea-556f30556fbc</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\DocumentOCR.Application\DocumentOCR.Application.csproj" />
+    <ProjectReference Include="..\..\DocumentOCR.Domain\DocumentOCR.Domain.csproj" />
+    <ProjectReference Include="..\..\DocumentOCR.Infrastructure\DocumentOCR.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.9" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="10.0.9" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="10.0.9" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" Version="10.0.9" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.9" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.9" />
+  </ItemGroup>
+
+</Project>

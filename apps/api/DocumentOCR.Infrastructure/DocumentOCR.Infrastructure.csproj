@@ -6,6 +6,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Lets DocumentOCR.UnitTests exercise pure internal helpers (e.g. Azure feature-name
+         mapping) directly, without needing a live Azure endpoint. -->
+    <InternalsVisibleTo Include="DocumentOCR.UnitTests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Azure.AI.DocumentIntelligence" Version="1.0.0" />
     <PackageReference Include="ClosedXML" Version="0.105.0" />
     <PackageReference Include="Hangfire.AspNetCore" Version="1.8.23" />

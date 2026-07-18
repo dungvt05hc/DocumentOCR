@@ -18,7 +18,21 @@ public sealed class AzureOcrOptions
     /// Model ID applied to all documents unless overridden. Supported values:
     /// prebuilt-read, prebuilt-layout, prebuilt-invoice, prebuilt-receipt.
     /// </summary>
-    public string DefaultModelId { get; set; } = "prebuilt-invoice";
+    public string DefaultModelId { get; set; } = "prebuilt-layout";
+
+    /// <summary>
+    /// Optional Azure Document Intelligence add-on features to request (e.g. "keyValuePairs").
+    /// Unrecognized values are logged and skipped rather than failing the request — see
+    /// <see cref="AzureDocumentIntelligenceProvider"/>'s feature mapping.
+    /// </summary>
+    public List<string> Features { get; set; } = [];
+
+    /// <summary>
+    /// Model IDs the dev-only OCR benchmark tool (apps/api/tools/DocumentOCR.OcrBenchmark) runs
+    /// per sample file when no --models override is given. Not used by the WebApi pipeline itself
+    /// (which always uses <see cref="DefaultModelId"/>).
+    /// </summary>
+    public List<string> BenchmarkModelIds { get; set; } = [];
 
     // ── Resilience ────────────────────────────────────────────────────────────────
 

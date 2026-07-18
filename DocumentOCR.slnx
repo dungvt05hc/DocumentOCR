@@ -9,4 +9,7 @@
     <Project Path="apps/api/tests/DocumentOCR.IntegrationTests/DocumentOCR.IntegrationTests.csproj" />
     <Project Path="apps/api/tests/DocumentOCR.UnitTests/DocumentOCR.UnitTests.csproj" />
   </Folder>
+  <Folder Name="/apps/api/tools/">
+    <Project Path="apps/api/tools/DocumentOCR.OcrBenchmark/DocumentOCR.OcrBenchmark.csproj" />
+  </Folder>
 </Solution>

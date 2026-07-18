@@ -44,8 +44,6 @@ public sealed class AzureDocumentIntelligenceProvider : IDocumentOcrProvider
         _client = new Lazy<DocumentIntelligenceClient?>(BuildClient, isThreadSafe: true);
     }
 
-    // â”€â”€ IDocumentOcrProvider â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
     public async Task<OcrResult> AnalyzeAsync(DocumentInput input, CancellationToken ct = default)
     {
         var client = _client.Value;
@@ -59,7 +57,7 @@ public sealed class AzureDocumentIntelligenceProvider : IDocumentOcrProvider
 
         var sw = Stopwatch.StartNew();
 
-        // â”€â”€ Combined cancellation: caller token + operation timeout â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // Combined cancellation: caller token + operation timeout
         using var timeoutCts = new CancellationTokenSource(
             TimeSpan.FromSeconds(_options.OperationTimeoutSeconds));
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
@@ -70,12 +68,13 @@ public sealed class AzureDocumentIntelligenceProvider : IDocumentOcrProvider
 
         try
         {
-            // â”€â”€ Read stream into memory (Azure SDK requires BinaryData) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // Read stream into memory (Azure SDK requires BinaryData)
             using var ms = new MemoryStream();
             await input.Content.CopyToAsync(ms, linkedCts.Token);
 
             var binaryData = BinaryData.FromBytes(ms.ToArray());
             var analyzeOptions = new AnalyzeDocumentOptions(_options.DefaultModelId, binaryData);
+            ApplyFeatures(analyzeOptions, _options.Features, input.FileName, _logger);
 
             var operation = await client.AnalyzeDocumentAsync(
                 WaitUntil.Completed,
@@ -86,13 +85,13 @@ public sealed class AzureDocumentIntelligenceProvider : IDocumentOcrProvider
 
             var analyzeResult = operation.Value;
 
-            // â”€â”€ Capture raw HTTP response body for debugging â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // Capture raw HTTP response body for debugging
             var rawJson = TryCaptureRawJson(operation);
 
-            // â”€â”€ Extract key-value fields â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // Extract key-value fields from the result
             var fieldCandidates = ExtractFieldCandidates(analyzeResult);
 
-            // â”€â”€ Build per-page results â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // Build per-page results
             var pageResults = analyzeResult.Pages
                 .Select(BuildPageResult)
                 .ToList();
@@ -162,7 +161,43 @@ public sealed class AzureDocumentIntelligenceProvider : IDocumentOcrProvider
         }
     }
 
-    // â”€â”€ Client factory â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Feature mapping
+
+    private static readonly Dictionary<string, DocumentAnalysisFeature> FeaturesByName =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["keyValuePairs"] = DocumentAnalysisFeature.KeyValuePairs,
+            ["barcodes"] = DocumentAnalysisFeature.Barcodes,
+            ["formulas"] = DocumentAnalysisFeature.Formulas,
+            ["languages"] = DocumentAnalysisFeature.Languages,
+            ["ocrHighResolution"] = DocumentAnalysisFeature.OcrHighResolution,
+            ["queryFields"] = DocumentAnalysisFeature.QueryFields
+        };
+
+    /// <summary>
+    /// Adds configured add-on features (e.g. "keyValuePairs") to the analyze request.
+    /// Unrecognized feature names are logged and skipped rather than failing the whole request —
+    /// a typo in config should degrade gracefully, not break OCR processing.
+    /// </summary>
+    internal static void ApplyFeatures(
+        AnalyzeDocumentOptions analyzeOptions, IReadOnlyList<string> features, string fileName, ILogger logger)
+    {
+        foreach (var name in features)
+        {
+            if (FeaturesByName.TryGetValue(name, out var feature))
+            {
+                analyzeOptions.Features.Add(feature);
+            }
+            else
+            {
+                logger.LogWarning(
+                    "Unknown AzureDocumentIntelligence feature '{Feature}' requested for '{FileName}' — skipped.",
+                    name, fileName);
+            }
+        }
+    }
+
+    // Client factory
 
     private DocumentIntelligenceClient? BuildClient()
     {
@@ -207,7 +242,7 @@ public sealed class AzureDocumentIntelligenceProvider : IDocumentOcrProvider
             clientOptions);
     }
 
-    // â”€â”€ Field extraction â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Field extraction
 
     private static List<OcrFieldCandidate> ExtractFieldCandidates(AnalyzeResult analyzeResult)
     {
@@ -242,7 +277,7 @@ public sealed class AzureDocumentIntelligenceProvider : IDocumentOcrProvider
         return candidates;
     }
 
-    // â”€â”€ Page result builder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Page result builder
 
     private static OcrPageResult BuildPageResult(DocumentPage page)
     {
@@ -289,7 +324,7 @@ public sealed class AzureDocumentIntelligenceProvider : IDocumentOcrProvider
         };
     }
 
-    // â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Helpers
 
     /// <summary>
     /// Checks whether a word polygon overlaps the line polygon using a Y-centroid heuristic.

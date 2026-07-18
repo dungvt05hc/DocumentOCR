@@ -1,11 +1,13 @@
 using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
 using DocumentOCR.Infrastructure;
+using DocumentOCR.Infrastructure.Ocr;
 using DocumentOCR.WebApi.Authorization;
 using DocumentOCR.WebApi.Middleware;
 using Hangfire;
 using Hangfire.Dashboard;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -78,6 +80,13 @@ builder.Services.AddRateLimiter(options =>
 builder.Services.AddInfrastructure(builder.Configuration);
 
 var app = builder.Build();
+
+// Eagerly resolve AzureOcrOptions so its startup validation (Endpoint/ApiKey required when
+// Ocr:Provider="Azure" — registered in DependencyInjection.cs) fails fast here, rather than
+// deferring to the first document upload. ValidateOnStart() should already trigger this via its
+// own hosted service, but resolving explicitly guarantees it regardless of hosted-service
+// ordering.
+app.Services.GetRequiredService<IOptions<AzureOcrOptions>>();
 
 // ── Middleware ────────────────────────────────────────────────────────────────
 app.UseMiddleware<GlobalExceptionMiddleware>();

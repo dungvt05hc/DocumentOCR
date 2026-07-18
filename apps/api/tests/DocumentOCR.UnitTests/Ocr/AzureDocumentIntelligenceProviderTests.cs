@@ -1,3 +1,4 @@
+using Azure.AI.DocumentIntelligence;
 using DocumentOCR.Application.Models;
 using DocumentOCR.Infrastructure.Ocr;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -137,5 +138,67 @@ public class AzureDocumentIntelligenceProviderTests
         };
 
         Assert.True(options.IsConfigured);
+    }
+
+    // ── AzureOcrOptions defaults ─────────────────────────────────────────────────
+
+    [Fact]
+    public void Defaults_DefaultModelId_IsPrebuiltLayout()
+    {
+        Assert.Equal("prebuilt-layout", new AzureOcrOptions().DefaultModelId);
+    }
+
+    [Fact]
+    public void Defaults_FeaturesAndBenchmarkModelIds_AreEmpty()
+    {
+        var options = new AzureOcrOptions();
+
+        Assert.Empty(options.Features);
+        Assert.Empty(options.BenchmarkModelIds);
+    }
+
+    // ── ApplyFeatures (pure — no Azure call; AnalyzeDocumentOptions is just a request DTO) ───
+
+    [Fact]
+    public void ApplyFeatures_KnownFeatureName_IsAddedToRequest()
+    {
+        var analyzeOptions = new AnalyzeDocumentOptions("prebuilt-layout", BinaryData.FromBytes([1]));
+
+        AzureDocumentIntelligenceProvider.ApplyFeatures(
+            analyzeOptions, ["keyValuePairs"], "test.pdf", NullLogger.Instance);
+
+        Assert.Contains(DocumentAnalysisFeature.KeyValuePairs, analyzeOptions.Features);
+    }
+
+    [Fact]
+    public void ApplyFeatures_UnknownFeatureName_IsSkippedWithoutThrowing()
+    {
+        var analyzeOptions = new AnalyzeDocumentOptions("prebuilt-layout", BinaryData.FromBytes([1]));
+
+        AzureDocumentIntelligenceProvider.ApplyFeatures(
+            analyzeOptions, ["notARealFeature"], "test.pdf", NullLogger.Instance);
+
+        Assert.Empty(analyzeOptions.Features);
+    }
+
+    [Fact]
+    public void ApplyFeatures_EmptyList_LeavesRequestFeaturesEmpty()
+    {
+        var analyzeOptions = new AnalyzeDocumentOptions("prebuilt-layout", BinaryData.FromBytes([1]));
+
+        AzureDocumentIntelligenceProvider.ApplyFeatures(analyzeOptions, [], "test.pdf", NullLogger.Instance);
+
+        Assert.Empty(analyzeOptions.Features);
+    }
+
+    [Fact]
+    public void ApplyFeatures_IsCaseInsensitive()
+    {
+        var analyzeOptions = new AnalyzeDocumentOptions("prebuilt-layout", BinaryData.FromBytes([1]));
+
+        AzureDocumentIntelligenceProvider.ApplyFeatures(
+            analyzeOptions, ["KEYVALUEPAIRS"], "test.pdf", NullLogger.Instance);
+
+        Assert.Contains(DocumentAnalysisFeature.KeyValuePairs, analyzeOptions.Features);
     }
 }

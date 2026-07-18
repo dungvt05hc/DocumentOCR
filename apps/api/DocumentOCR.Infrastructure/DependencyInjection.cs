@@ -11,6 +11,7 @@ using Hangfire.PostgreSql;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace DocumentOCR.Infrastructure;
 
@@ -34,13 +35,26 @@ public static class DependencyInjection
         services.AddScoped<IDocumentStorageService, LocalDocumentStorageService>();
 
         // ── OCR provider ─────────────────────────────────────────────────────────
-        services.Configure<AzureOcrOptions>(
-            configuration.GetSection(AzureOcrOptions.SectionName));
+        services.Configure<OcrOptions>(configuration.GetSection(OcrOptions.SectionName));
 
         // Selected via "Ocr:Provider" config ("Fake" | "Azure"); defaults to Fake so
         // local/test environments never accidentally call Azure without opting in.
-        var ocrProvider = configuration["Ocr:Provider"];
-        if (string.Equals(ocrProvider, "Azure", StringComparison.OrdinalIgnoreCase))
+        var ocrProviderName = configuration["Ocr:Provider"];
+        var isAzureProvider = string.Equals(ocrProviderName, "Azure", StringComparison.OrdinalIgnoreCase);
+
+        // Fails fast at host startup (not on the first document processed) when Ocr:Provider is
+        // "Azure" but Endpoint/ApiKey are missing — a misconfigured deployment should never
+        // silently accept uploads it can't actually OCR.
+        services.AddOptions<AzureOcrOptions>()
+            .Bind(configuration.GetSection(AzureOcrOptions.SectionName))
+            .Validate(
+                o => !isAzureProvider || o.IsConfigured,
+                "AzureDocumentIntelligence:Endpoint and ApiKey must be set (via dotnet user-secrets " +
+                "or AzureDocumentIntelligence__Endpoint / __ApiKey environment variables) when " +
+                "Ocr:Provider is \"Azure\". See LOCAL_DEVELOPMENT.md.")
+            .ValidateOnStart();
+
+        if (isAzureProvider)
         {
             // Registered as Singleton: DocumentIntelligenceClient is thread-safe and designed for reuse.
             services.AddSingleton<IDocumentOcrProvider, AzureDocumentIntelligenceProvider>();

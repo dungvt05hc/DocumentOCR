@@ -7,6 +7,7 @@ using DocumentOCR.Infrastructure.Persistence;
 using DocumentOCR.Infrastructure.Processing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace DocumentOCR.UnitTests.Processing;
@@ -125,7 +126,8 @@ public class DocumentProcessingServiceTests
     private static DocumentProcessingService CreateSut(
         ApplicationDbContext db,
         IDocumentOcrProvider ocrProvider,
-        IDocumentStorageService storage) =>
+        IDocumentStorageService storage,
+        OcrOptions? ocrOptions = null) =>
         new(
             db,
             storage,
@@ -133,6 +135,7 @@ public class DocumentProcessingServiceTests
             new FieldExtractionService(),
             new FieldNormalizationService(),
             new FieldValidationService(),
+            Options.Create(ocrOptions ?? new OcrOptions()),
             NullLogger<DocumentProcessingService>.Instance);
 
     private static ApplicationDbContext CreateDbContext()
@@ -185,6 +188,42 @@ public class DocumentProcessingServiceTests
 
         public Task DeleteAsync(string storedPath, CancellationToken ct = default) =>
             throw new NotSupportedException("Not used by ProcessAsync.");
+    }
+
+    // ── StoreRawProviderResponse ──────────────────────────────────────────────────
+
+    [Fact]
+    public async Task ProcessAsync_StoreRawProviderResponseTrue_PersistsRawResponseJson()
+    {
+        await using var db = CreateDbContext();
+        var document = await SeedDocumentAsync(db, DocumentStatus.Uploaded);
+        var provider = new StubOcrProvider(new OcrResult
+        {
+            Success = true, PageCount = 1, RawProviderResponseJson = "{\"raw\":true}"
+        });
+        var sut = CreateSut(db, provider, new FakeDocumentStorageService(), new OcrOptions { StoreRawProviderResponse = true });
+
+        await sut.ProcessAsync(document.Id);
+
+        var log = await db.OcrProviderLogs.SingleAsync(l => l.DocumentId == document.Id);
+        Assert.Equal("{\"raw\":true}", log.RawResponseJson);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_StoreRawProviderResponseFalse_DoesNotPersistRawResponseJson()
+    {
+        await using var db = CreateDbContext();
+        var document = await SeedDocumentAsync(db, DocumentStatus.Uploaded);
+        var provider = new StubOcrProvider(new OcrResult
+        {
+            Success = true, PageCount = 1, RawProviderResponseJson = "{\"raw\":true}"
+        });
+        var sut = CreateSut(db, provider, new FakeDocumentStorageService(), new OcrOptions { StoreRawProviderResponse = false });
+
+        await sut.ProcessAsync(document.Id);
+
+        var log = await db.OcrProviderLogs.SingleAsync(l => l.DocumentId == document.Id);
+        Assert.Null(log.RawResponseJson);
     }
 
     private sealed class StubOcrProvider(OcrResult result) : IDocumentOcrProvider

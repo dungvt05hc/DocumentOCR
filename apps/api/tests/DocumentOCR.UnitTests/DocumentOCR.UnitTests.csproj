@@ -23,6 +23,7 @@
     <ProjectReference Include="..\..\DocumentOCR.Domain\DocumentOCR.Domain.csproj" />
     <ProjectReference Include="..\..\DocumentOCR.Application\DocumentOCR.Application.csproj" />
     <ProjectReference Include="..\..\DocumentOCR.Infrastructure\DocumentOCR.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\tools\DocumentOCR.OcrBenchmark\DocumentOCR.OcrBenchmark.csproj" />
   </ItemGroup>
 
 </Project>
