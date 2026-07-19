@@ -89,6 +89,64 @@ public class FieldValidationTests
     }
 
     [Theory]
+    [InlineData(nameof(DocumentType.PosReceipt))]
+    [InlineData(nameof(DocumentType.RestaurantBill))]
+    public void Validate_MissingSupplierTaxCodeForReceiptLikeCategory_DoesNotProduceTaxCodeRequiredWarning(string category)
+    {
+        var fields = ValidFields().Where(f => f.FieldName != nameof(FieldName.SupplierTaxCode)).ToList();
+        fields.RemoveAll(f => f.FieldName == nameof(FieldName.DocumentType));
+        fields.Add(Field(nameof(FieldName.DocumentType), category));
+
+        var warnings = _sut.Validate(DocId, fields);
+
+        Assert.DoesNotContain(warnings, w =>
+            w.FieldName == nameof(FieldName.SupplierTaxCode) && w.WarningCode == "REQUIRED_FIELD_MISSING");
+    }
+
+    [Fact]
+    public void Validate_MissingSupplierTaxCodeForVatInvoice_ProducesHighSeverityWarning()
+    {
+        var fields = ValidFields().Where(f => f.FieldName != nameof(FieldName.SupplierTaxCode)).ToList();
+        fields.RemoveAll(f => f.FieldName == nameof(FieldName.DocumentType));
+        fields.Add(Field(nameof(FieldName.DocumentType), nameof(DocumentType.VatInvoice)));
+
+        var warnings = _sut.Validate(DocId, fields);
+
+        Assert.Contains(warnings, w =>
+            w.FieldName == nameof(FieldName.SupplierTaxCode)
+            && w.WarningCode == "REQUIRED_FIELD_MISSING"
+            && w.Severity == ValidationSeverity.High);
+    }
+
+    [Fact]
+    public void Validate_MissingInvoiceDateForVatInvoice_ProducesHighSeverityWarning()
+    {
+        var fields = ValidFields().Where(f => f.FieldName != nameof(FieldName.InvoiceDate)).ToList();
+
+        var warnings = _sut.Validate(DocId, fields);
+
+        Assert.Contains(warnings, w =>
+            w.FieldName == nameof(FieldName.InvoiceDate)
+            && w.WarningCode == "REQUIRED_FIELD_MISSING"
+            && w.Severity == ValidationSeverity.High);
+    }
+
+    [Fact]
+    public void Validate_MissingInvoiceDateForPosReceipt_ProducesWarningSeverityNotHigh()
+    {
+        var fields = ValidFields().Where(f => f.FieldName != nameof(FieldName.InvoiceDate)).ToList();
+        fields.RemoveAll(f => f.FieldName == nameof(FieldName.DocumentType));
+        fields.Add(Field(nameof(FieldName.DocumentType), nameof(DocumentType.PosReceipt)));
+
+        var warnings = _sut.Validate(DocId, fields);
+
+        Assert.Contains(warnings, w =>
+            w.FieldName == nameof(FieldName.InvoiceDate)
+            && w.WarningCode == "REQUIRED_FIELD_MISSING"
+            && w.Severity == ValidationSeverity.Warning);
+    }
+
+    [Theory]
     [InlineData("0")]
     [InlineData("-1000")]
     [InlineData("abc")]

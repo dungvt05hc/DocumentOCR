@@ -34,7 +34,7 @@ public class FieldExtractionServiceTests
         AssertField(fields, FieldName.VatAmount, "100.000");
         AssertField(fields, FieldName.TotalAmount, "₫1.100.000");
         AssertField(fields, FieldName.Currency, "₫");
-        AssertField(fields, FieldName.DocumentType, nameof(DocumentType.Invoice));
+        AssertField(fields, FieldName.DocumentType, nameof(DocumentType.VatInvoice));
         AssertField(fields, FieldName.Notes, "Khách thanh toán chuyển khoản");
     }
 
@@ -64,9 +64,10 @@ public class FieldExtractionServiceTests
     [Fact]
     public void Extract_FullTextWithoutLines_UsesRegexFallback()
     {
-        var ocr = new OcrResult
+        var ocr = new NormalizedOcrDocument
         {
             Success = true,
+            ProviderName = "Test",
             FullText = """
                 HÓA ĐƠN BÁN HÀNG
                 MST: 0100109106
@@ -76,7 +77,7 @@ public class FieldExtractionServiceTests
                 Thuế GTGT: 200 000
                 Tổng tiền: 2 200 000 VND
                 """,
-            Confidence = 0.8,
+            AverageConfidence = 0.8,
             PageCount = 1
         };
 
@@ -88,8 +89,9 @@ public class FieldExtractionServiceTests
         AssertField(fields, FieldName.SubtotalAmount, "2 000 000");
         AssertField(fields, FieldName.VatAmount, "200 000");
         AssertField(fields, FieldName.TotalAmount, "2 200 000 VND");
-        // "HÓA ĐƠN BÁN HÀNG" is a sales receipt, not a VAT invoice, despite the "hóa đơn" substring.
-        AssertField(fields, FieldName.DocumentType, nameof(DocumentType.Receipt));
+        // "HÓA ĐƠN BÁN HÀNG" is a POS/sales receipt title, not a VAT invoice, despite the
+        // "hóa đơn" substring — it's a distinct category (PosReceipt) from a generic Receipt.
+        AssertField(fields, FieldName.DocumentType, nameof(DocumentType.PosReceipt));
     }
 
     [Fact]
@@ -99,13 +101,8 @@ public class FieldExtractionServiceTests
             "Số hóa đơn: OCR-LOW",
             "Tổng thanh toán: 9.999");
 
-        ocr = new OcrResult
+        ocr = ocr with
         {
-            Success = true,
-            FullText = ocr.FullText,
-            Pages = ocr.Pages,
-            Confidence = ocr.Confidence,
-            PageCount = 1,
             Fields =
             [
                 new()
@@ -184,19 +181,20 @@ public class FieldExtractionServiceTests
         AssertField(fields, FieldName.TotalAmount, "60.000");
     }
 
-    private static OcrResult OcrFromLines(params string[] lines)
+    private static NormalizedOcrDocument OcrFromLines(params string[] lines)
     {
         var ocrLines = lines
-            .Select((text, index) => new OcrLineResult
+            .Select((text, index) => new OcrLine
             {
                 LineNumber = index + 1,
                 Text = text,
+                PageNumber = 1,
                 Confidence = 0.95,
                 BoundingBox = BoundingBox.FromRect(0, index * 0.3, 8, 0.25)
             })
             .ToList();
 
-        var page = new OcrPageResult
+        var page = new OcrPage
         {
             PageNumber = 1,
             FullText = string.Join('\n', lines),
@@ -204,12 +202,13 @@ public class FieldExtractionServiceTests
             Lines = ocrLines
         };
 
-        return new OcrResult
+        return new NormalizedOcrDocument
         {
             Success = true,
+            ProviderName = "Test",
             FullText = page.FullText,
             Pages = [page],
-            Confidence = 0.95,
+            AverageConfidence = 0.95,
             PageCount = 1
         };
     }

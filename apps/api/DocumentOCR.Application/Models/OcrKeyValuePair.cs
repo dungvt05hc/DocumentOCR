@@ -5,10 +5,10 @@ namespace DocumentOCR.Application.Models;
 /// Distinct from <see cref="OcrFieldCandidate"/>, which represents provider-specific prebuilt
 /// model fields (e.g. prebuilt-invoice's VendorName) rather than free-form layout key-value pairs.
 /// </summary>
-public sealed class OcrKeyValuePairResult
+public sealed class OcrKeyValuePair
 {
-    public string Key { get; init; } = string.Empty;
-    public string? Value { get; init; }
+    public string KeyText { get; init; } = string.Empty;
+    public string? ValueText { get; init; }
     public double? Confidence { get; init; }
 
     /// <summary>1-based page number where the key was found, when available.</summary>

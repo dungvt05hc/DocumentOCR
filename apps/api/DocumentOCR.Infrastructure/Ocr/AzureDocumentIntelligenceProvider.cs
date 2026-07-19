@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using Azure;
 using Azure.AI.DocumentIntelligence;
 using Azure.Core;
@@ -44,7 +44,7 @@ public sealed class AzureDocumentIntelligenceProvider : IDocumentOcrProvider
         _client = new Lazy<DocumentIntelligenceClient?>(BuildClient, isThreadSafe: true);
     }
 
-    public async Task<OcrResult> AnalyzeAsync(DocumentInput input, CancellationToken ct = default)
+    public async Task<NormalizedOcrDocument> AnalyzeAsync(DocumentInput input, CancellationToken ct = default)
     {
         var client = _client.Value;
         if (client is null)
@@ -99,7 +99,6 @@ public sealed class AzureDocumentIntelligenceProvider : IDocumentOcrProvider
             var fullText = string.Join("\n", pageResults.Select(p => p.FullText));
             var pageCount = analyzeResult.Pages.Count;
 
-            // Layout extras: captured for diagnostics/future use, not yet consumed by field extraction.
             var tables = (analyzeResult.Tables ?? [])
                 .Select(BuildTableResult)
                 .ToList();
@@ -110,17 +109,21 @@ public sealed class AzureDocumentIntelligenceProvider : IDocumentOcrProvider
                 .Select(BuildKeyValuePairResult)
                 .ToList();
 
+            var averageConfidence = CalculateAverageConfidence(pageResults);
+
             _logger.LogInformation(
                 "OCR analysis completed. File={FileName} Pages={PageCount} Fields={FieldCount} Tables={TableCount} " +
                 "Paragraphs={ParagraphCount} KeyValuePairs={KeyValuePairCount} Elapsed={ElapsedMs}ms",
                 input.FileName, pageCount, fieldCandidates.Count, tables.Count, paragraphs.Count,
                 keyValuePairs.Count, sw.Elapsed.TotalMilliseconds);
 
-            return new OcrResult
+            return new NormalizedOcrDocument
             {
                 Success = true,
+                ProviderName = ProviderName,
                 FullText = fullText,
                 Pages = pageResults,
+                AverageConfidence = averageConfidence,
                 Fields = fieldCandidates,
                 Tables = tables,
                 Paragraphs = paragraphs,
@@ -129,7 +132,8 @@ public sealed class AzureDocumentIntelligenceProvider : IDocumentOcrProvider
                 PageCount = pageCount,
                 ProcessingTimeMs = sw.Elapsed.TotalMilliseconds,
                 EstimatedCost = CalculateCost(pageCount),
-                ModelId = _options.DefaultModelId,
+                ModelId = analyzeResult.ModelId ?? _options.DefaultModelId,
+                ApiVersion = analyzeResult.ApiVersion,
                 RawProviderResponseJson = rawJson
             };
         }
@@ -193,7 +197,7 @@ public sealed class AzureDocumentIntelligenceProvider : IDocumentOcrProvider
 
     /// <summary>
     /// Adds configured add-on features (e.g. "keyValuePairs") to the analyze request.
-    /// Unrecognized feature names are logged and skipped rather than failing the whole request —
+    /// Unrecognized feature names are logged and skipped rather than failing the whole request â€”
     /// a typo in config should degrade gracefully, not break OCR processing.
     /// </summary>
     internal static void ApplyFeatures(
@@ -208,7 +212,7 @@ public sealed class AzureDocumentIntelligenceProvider : IDocumentOcrProvider
             else
             {
                 logger.LogWarning(
-                    "Unknown AzureDocumentIntelligence feature '{Feature}' requested for '{FileName}' — skipped.",
+                    "Unknown AzureDocumentIntelligence feature '{Feature}' requested for '{FileName}' â€” skipped.",
                     name, fileName);
             }
         }
@@ -296,61 +300,70 @@ public sealed class AzureDocumentIntelligenceProvider : IDocumentOcrProvider
 
     // Page result builder
 
-    private static OcrPageResult BuildPageResult(DocumentPage page)
+    private static OcrPage BuildPageResult(DocumentPage page)
     {
         var lines = page.Lines?
             .Select((line, i) =>
             {
                 var words = page.Words?
                     .Where(w => IsWordOnLine(w, line))
-                    .Select(w => new OcrWordResult
-                    {
-                        Text = w.Content,
-                        Confidence = (double)w.Confidence,
-                        BoundingBox = ToPolygonBoundingBox(w.Polygon)
-                    })
+                    .Select(w => BuildWordResult(w, page.PageNumber))
                     .ToList() ?? [];
 
-                return new OcrLineResult
+                var span = line.Spans?.FirstOrDefault();
+
+                return new OcrLine
                 {
                     LineNumber = i + 1,
                     Text = line.Content,
+                    PageNumber = page.PageNumber,
                     BoundingBox = ToPolygonBoundingBox(line.Polygon),
+                    SpanOffset = span?.Offset,
+                    SpanLength = span?.Length,
                     Words = words
                 };
             })
             .ToList() ?? [];
 
         var pageWords = page.Words?
-            .Select(w => new OcrWordResult
-            {
-                Text = w.Content,
-                Confidence = (double)w.Confidence,
-                BoundingBox = ToPolygonBoundingBox(w.Polygon)
-            })
+            .Select(w => BuildWordResult(w, page.PageNumber))
             .ToList() ?? [];
 
-        return new OcrPageResult
+        return new OcrPage
         {
             PageNumber = page.PageNumber,
             FullText = string.Join(" ", page.Lines?.Select(l => l.Content) ?? []),
             Width = page.Width.HasValue ? (double)page.Width.Value : 0,
             Height = page.Height.HasValue ? (double)page.Height.Value : 0,
+            Unit = page.Unit?.ToString(),
+            Angle = page.Angle.HasValue ? (double)page.Angle.Value : null,
             Lines = lines,
             Words = pageWords
         };
     }
 
+    private static OcrWord BuildWordResult(DocumentWord word, int pageNumber) => new()
+    {
+        Text = word.Content,
+        PageNumber = pageNumber,
+        Confidence = (double)word.Confidence,
+        BoundingBox = ToPolygonBoundingBox(word.Polygon),
+        SpanOffset = word.Span.Offset,
+        SpanLength = word.Span.Length
+    };
+
     // Layout extras mapping
 
-    internal static OcrTableResult BuildTableResult(DocumentTable table)
+    internal static OcrTable BuildTableResult(DocumentTable table)
     {
         var cells = (table.Cells ?? [])
-            .Select(cell => new OcrTableCellResult
+            .Select(cell => new OcrTableCell
             {
                 RowIndex = cell.RowIndex,
                 ColumnIndex = cell.ColumnIndex,
-                Content = cell.Content,
+                RowSpan = cell.RowSpan ?? 1,
+                ColumnSpan = cell.ColumnSpan ?? 1,
+                Text = cell.Content,
                 Kind = cell.Kind?.ToString(),
                 BoundingBox = cell.BoundingRegions is { Count: > 0 }
                     ? ToPolygonBoundingBox(cell.BoundingRegions[0].Polygon)
@@ -358,34 +371,41 @@ public sealed class AzureDocumentIntelligenceProvider : IDocumentOcrProvider
             })
             .ToList();
 
-        return new OcrTableResult
+        return new OcrTable
         {
             PageNumber = table.BoundingRegions is { Count: > 0 } ? table.BoundingRegions[0].PageNumber : null,
             RowCount = table.RowCount,
             ColumnCount = table.ColumnCount,
-            Cells = cells
-        };
-    }
-
-    internal static OcrParagraphResult BuildParagraphResult(DocumentParagraph paragraph)
-    {
-        return new OcrParagraphResult
-        {
-            Content = paragraph.Content,
-            Role = paragraph.Role?.ToString(),
-            PageNumber = paragraph.BoundingRegions is { Count: > 0 } ? paragraph.BoundingRegions[0].PageNumber : null,
-            BoundingBox = paragraph.BoundingRegions is { Count: > 0 }
-                ? ToPolygonBoundingBox(paragraph.BoundingRegions[0].Polygon)
+            Cells = cells,
+            BoundingBox = table.BoundingRegions is { Count: > 0 }
+                ? ToPolygonBoundingBox(table.BoundingRegions[0].Polygon)
                 : null
         };
     }
 
-    internal static OcrKeyValuePairResult BuildKeyValuePairResult(DocumentKeyValuePair kvp)
+    internal static OcrParagraph BuildParagraphResult(DocumentParagraph paragraph)
     {
-        return new OcrKeyValuePairResult
+        var span = paragraph.Spans?.FirstOrDefault();
+
+        return new OcrParagraph
         {
-            Key = kvp.Key.Content,
-            Value = kvp.Value?.Content,
+            Text = paragraph.Content,
+            Role = paragraph.Role?.ToString(),
+            PageNumber = paragraph.BoundingRegions is { Count: > 0 } ? paragraph.BoundingRegions[0].PageNumber : null,
+            BoundingBox = paragraph.BoundingRegions is { Count: > 0 }
+                ? ToPolygonBoundingBox(paragraph.BoundingRegions[0].Polygon)
+                : null,
+            SpanOffset = span?.Offset,
+            SpanLength = span?.Length
+        };
+    }
+
+    internal static OcrKeyValuePair BuildKeyValuePairResult(DocumentKeyValuePair kvp)
+    {
+        return new OcrKeyValuePair
+        {
+            KeyText = kvp.Key.Content,
+            ValueText = kvp.Value?.Content,
             Confidence = kvp.Confidence,
             PageNumber = kvp.Key.BoundingRegions is { Count: > 0 } ? kvp.Key.BoundingRegions[0].PageNumber : null,
             KeyBoundingBox = kvp.Key.BoundingRegions is { Count: > 0 }
@@ -443,6 +463,21 @@ public sealed class AzureDocumentIntelligenceProvider : IDocumentOcrProvider
     }
 
     /// <summary>
+    /// Document-level confidence isn't returned directly by Azure Document Intelligence â€”
+    /// approximate it as the mean word-level confidence across all pages.
+    /// </summary>
+    private static double? CalculateAverageConfidence(IReadOnlyList<OcrPage> pages)
+    {
+        var confidences = pages
+            .SelectMany(p => p.Words)
+            .Where(w => w.Confidence.HasValue)
+            .Select(w => w.Confidence!.Value)
+            .ToList();
+
+        return confidences.Count > 0 ? confidences.Average() : null;
+    }
+
+    /// <summary>
     /// Rough per-page cost estimate. Update pricing tiers as Azure billing changes.
     /// </summary>
     private static decimal CalculateCost(int pageCount)
@@ -452,9 +487,10 @@ public sealed class AzureDocumentIntelligenceProvider : IDocumentOcrProvider
         return pageCount * pricePerPage;
     }
 
-    private OcrResult Failure(string message, double processingTimeMs) => new()
+    private NormalizedOcrDocument Failure(string message, double processingTimeMs) => new()
     {
         Success = false,
+        ProviderName = ProviderName,
         ErrorMessage = message,
         ProcessingTimeMs = processingTimeMs,
         ModelId = _options.DefaultModelId

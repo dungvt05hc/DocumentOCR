@@ -14,6 +14,8 @@ public class OcrProviderLogConfiguration : IEntityTypeConfiguration<OcrProviderL
         builder.Property(l => l.ErrorMessage).HasMaxLength(2000);
         builder.Property(l => l.EstimatedCost).HasColumnType("numeric(18,6)");
         builder.Property(l => l.RawResponseJson).HasColumnType("jsonb");
+        builder.Property(l => l.RawResponsePath).HasMaxLength(500);
+        builder.Property(l => l.NormalizedResultPath).HasMaxLength(500);
 
         builder.HasOne(l => l.Document)
             .WithMany(d => d.OcrProviderLogs)

@@ -16,4 +16,10 @@ public class OcrOptionsTests
     {
         Assert.True(new OcrOptions().StoreRawProviderResponse);
     }
+
+    [Fact]
+    public void Defaults_StoreNormalizedOcrResultIsTrue()
+    {
+        Assert.True(new OcrOptions().StoreNormalizedOcrResult);
+    }
 }

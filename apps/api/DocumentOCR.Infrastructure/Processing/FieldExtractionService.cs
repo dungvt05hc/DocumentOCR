@@ -104,17 +104,24 @@ public partial class FieldExtractionService : IFieldExtractionService
 
     private const int TopLineSupplierScanWindow = 6;
 
-    public IReadOnlyList<ExtractedField> Extract(Guid documentId, OcrResult ocrResult)
+    public IReadOnlyList<ExtractedField> Extract(Guid documentId, NormalizedOcrDocument ocrResult)
     {
         ArgumentNullException.ThrowIfNull(ocrResult);
 
+        // Collect candidates from every source unconditionally, then pick the best one per
+        // field by confidence (SourcePriority only breaks ties) — this lets a high-confidence
+        // KeyValuePair or Table hit win over a weaker Line/Regex candidate for the same field
+        // without needing a strict "stop at first match" cascade.
         var candidates = new List<FieldCandidate>();
-        AddStructuredFieldCandidates(ocrResult, candidates);
+        AddKeyValuePairCandidates(ocrResult, candidates);       // 1. KeyValuePairs (prebuilt-layout)
+        AddStructuredFieldCandidates(ocrResult, candidates);    // 2. Provider semantic fields (prebuilt-invoice/receipt)
 
         var lines = BuildLineContexts(ocrResult);
-        AddLineCandidates(lines, candidates);
-        AddSupplierNameTopLineCandidate(lines, candidates);
-        AddFullTextFallbackCandidates(ocrResult, candidates);
+        AddFullTextFallbackCandidates(ocrResult, candidates);   // 3. Regex over FullText
+        AddParagraphFallbackCandidates(ocrResult, candidates);  // 4. Regex over Paragraphs
+        AddLineCandidates(lines, candidates);                   // 5. Line proximity around keywords
+        AddTableFooterCandidates(ocrResult, candidates);        // 6. Table/footer heuristics
+        AddSupplierNameTopLineCandidate(lines, candidates);     // 7. Top-line merchant heuristic
         AddDocumentTypeCandidate(ocrResult, lines, candidates);
         AddCurrencyCandidate(ocrResult, lines, candidates);
         AddDefaultCurrencyCandidate(candidates);
@@ -135,12 +142,14 @@ public partial class FieldExtractionService : IFieldExtractionService
                 PageNumber = c.PageNumber,
                 BoundingBoxJson = c.BoundingBox is null ? null : JsonSerializer.Serialize(c.BoundingBox),
                 ExtractionMethod = c.SourceMethod,
-                SourceText = Truncate(c.SourceText, 300)
+                SourceText = Truncate(c.SourceText, 300),
+                SourceType = c.SourceType,
+                ProviderFieldName = c.ProviderFieldName
             })
             .ToList();
     }
 
-    private static void AddStructuredFieldCandidates(OcrResult ocrResult, List<FieldCandidate> candidates)
+    private static void AddStructuredFieldCandidates(NormalizedOcrDocument ocrResult, List<FieldCandidate> candidates)
     {
         foreach (var ocrField in ocrResult.Fields)
         {
@@ -155,18 +164,167 @@ public partial class FieldExtractionService : IFieldExtractionService
                 ocrField.BoundingBox,
                 SourcePriority: 100,
                 SourceMethod: "StructuredField",
-                SourceText: ocrField.Value));
+                SourceText: ocrField.Value,
+                SourceType: "StructuredField",
+                ProviderFieldName: ocrField.RawProviderKey));
         }
     }
 
-    private static IReadOnlyList<LineContext> BuildLineContexts(OcrResult ocrResult)
+    /// <summary>
+    /// Maps the OCR provider's free-form layout key-value pairs (Azure's "keyValuePairs"
+    /// add-on feature) onto canonical fields using the same Vietnamese keyword vocabulary as
+    /// the line-based heuristics below. This is the primary extraction path for
+    /// prebuilt-layout, which — unlike prebuilt-invoice/receipt — never populates
+    /// <see cref="NormalizedOcrDocument.Fields"/>.
+    /// </summary>
+    private static void AddKeyValuePairCandidates(NormalizedOcrDocument ocrResult, List<FieldCandidate> candidates)
+    {
+        foreach (var kvp in ocrResult.KeyValuePairs)
+        {
+            if (string.IsNullOrWhiteSpace(kvp.ValueText)) continue;
+
+            var keySearch = NormalizeForSearch(kvp.KeyText);
+            var confidence = kvp.Confidence ?? 0.9;
+            var boundingBox = kvp.ValueBoundingBox ?? kvp.KeyBoundingBox;
+            var sourceText = $"{kvp.KeyText}: {kvp.ValueText}";
+
+            void Add(string fieldName, string? value)
+            {
+                if (string.IsNullOrWhiteSpace(value)) return;
+                candidates.Add(new FieldCandidate(
+                    fieldName, value, confidence, kvp.PageNumber, boundingBox,
+                    SourcePriority: 105, SourceMethod: "KeyValuePair", SourceText: sourceText,
+                    SourceType: "KeyValuePair", ProviderFieldName: kvp.KeyText));
+            }
+
+            if (ContainsAny(keySearch, TaxCodeKeywords))
+            {
+                var match = TaxCodeValuePattern().Match(kvp.ValueText).Value;
+                Add(nameof(FieldName.SupplierTaxCode), string.IsNullOrEmpty(match) ? kvp.ValueText : match);
+            }
+            else if (ContainsAny(keySearch, SupplierKeywords))
+            {
+                Add(nameof(FieldName.SupplierName), CleanValue(kvp.ValueText));
+            }
+            else if (ContainsAny(keySearch, InvoiceDateKeywords))
+            {
+                var match = DateValuePattern().Match(kvp.ValueText).Value;
+                Add(nameof(FieldName.InvoiceDate), string.IsNullOrEmpty(match) ? kvp.ValueText : match);
+            }
+            else if (GetAmountFieldName(keySearch) is { } amountField)
+            {
+                Add(amountField, LastMoneyValue(kvp.ValueText) ?? kvp.ValueText);
+            }
+            else if (ContainsAny(keySearch, InvoiceNumberKeywords))
+            {
+                var match = InvoiceNumberValuePattern().Match(kvp.ValueText).Value;
+                Add(nameof(FieldName.InvoiceNumber), string.IsNullOrEmpty(match) ? kvp.ValueText : match);
+            }
+            else if (ContainsAny(keySearch, NotesKeywords))
+            {
+                Add(nameof(FieldName.Notes), CleanValue(kvp.ValueText));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Regex fallback scoped to individual layout paragraphs rather than the whole concatenated
+    /// document text. Slightly more reliable than <see cref="AddFullTextFallbackCandidates"/>
+    /// since a paragraph boundary can't accidentally splice together unrelated lines, and it
+    /// carries real page/bounding-box context that the flat full-text pass cannot.
+    /// </summary>
+    private static void AddParagraphFallbackCandidates(NormalizedOcrDocument ocrResult, List<FieldCandidate> candidates)
+    {
+        foreach (var paragraph in ocrResult.Paragraphs)
+        {
+            if (string.IsNullOrWhiteSpace(paragraph.Text)) continue;
+
+            AddParagraphRegexCandidate(candidates, nameof(FieldName.SupplierTaxCode), paragraph, TaxCodeFallbackPattern(), 0.68);
+            AddParagraphRegexCandidate(candidates, nameof(FieldName.InvoiceNumber), paragraph, InvoiceNumberFallbackPattern(), 0.66);
+            AddParagraphRegexCandidate(candidates, nameof(FieldName.InvoiceDate), paragraph, DateValuePattern(), 0.64);
+            AddParagraphRegexCandidate(candidates, nameof(FieldName.TotalAmount), paragraph, TotalAmountFallbackPattern(), 0.66, useLastGroup: true);
+            AddParagraphRegexCandidate(candidates, nameof(FieldName.VatAmount), paragraph, VatAmountFallbackPattern(), 0.64, useLastGroup: true);
+            AddParagraphRegexCandidate(candidates, nameof(FieldName.SubtotalAmount), paragraph, SubtotalFallbackPattern(), 0.64, useLastGroup: true);
+        }
+    }
+
+    private static void AddParagraphRegexCandidate(
+        List<FieldCandidate> candidates,
+        string fieldName,
+        OcrParagraph paragraph,
+        Regex pattern,
+        double confidence,
+        bool useLastGroup = false)
+    {
+        var match = pattern.Match(paragraph.Text);
+        if (!match.Success) return;
+
+        var value = useLastGroup
+            ? match.Groups[^1].Value
+            : match.Groups.Count > 1 ? match.Groups[1].Value : match.Value;
+
+        candidates.Add(new FieldCandidate(
+            fieldName, value, confidence, paragraph.PageNumber, paragraph.BoundingBox,
+            SourcePriority: 15, SourceMethod: "ParagraphRegex", SourceText: match.Value,
+            SourceType: "Regex"));
+    }
+
+    /// <summary>
+    /// Scans layout tables for a row whose label cell contains an amount keyword (e.g. "Tổng
+    /// cộng") and whose other cells contain a money value — a common shape for the totals
+    /// footer of a receipt/invoice table. Rows closer to the bottom of the table score higher,
+    /// since a genuine grand total sits below the line-item rows.
+    /// </summary>
+    private static void AddTableFooterCandidates(NormalizedOcrDocument ocrResult, List<FieldCandidate> candidates)
+    {
+        foreach (var table in ocrResult.Tables)
+        {
+            if (table.Cells.Count == 0) continue;
+
+            var rows = table.Cells.GroupBy(c => c.RowIndex).OrderBy(g => g.Key).ToList();
+
+            foreach (var row in rows)
+            {
+                var labelCell = row.FirstOrDefault(c => GetAmountFieldName(NormalizeForSearch(c.Text)) is not null);
+                if (labelCell is null) continue;
+
+                var fieldName = GetAmountFieldName(NormalizeForSearch(labelCell.Text))!;
+
+                // The amount is usually in a different cell on the same row — prefer the
+                // right-most cell that actually contains a numeric money value.
+                var valueCell = row
+                    .Where(c => !ReferenceEquals(c, labelCell))
+                    .OrderByDescending(c => c.ColumnIndex)
+                    .FirstOrDefault(c => LastMoneyValue(c.Text) is not null);
+
+                var value = LastMoneyValue(valueCell?.Text ?? labelCell.Text);
+                if (string.IsNullOrWhiteSpace(value)) continue;
+
+                var rowPositionBonus = rows.Count > 1 ? row.Key / (double)(rows.Count - 1) * 0.05 : 0;
+                var baseScore = fieldName == nameof(FieldName.TotalAmount) ? 0.8 : 0.76;
+
+                candidates.Add(new FieldCandidate(
+                    fieldName,
+                    value,
+                    Math.Min(0.9, baseScore + rowPositionBonus),
+                    table.PageNumber,
+                    (valueCell ?? labelCell).BoundingBox,
+                    SourcePriority: 40,
+                    SourceMethod: "TableFooter",
+                    SourceText: $"{labelCell.Text} | {(valueCell ?? labelCell).Text}",
+                    SourceType: "Table"));
+            }
+        }
+    }
+
+    private static IReadOnlyList<LineContext> BuildLineContexts(NormalizedOcrDocument ocrResult)
     {
         var lines = ocrResult.Pages
             .SelectMany(page => page.Lines.Select(line => new LineContext(
                 line.Text,
                 NormalizeForSearch(line.Text),
                 page.PageNumber,
-                line.Confidence ?? page.Confidence ?? ocrResult.Confidence,
+                line.Confidence ?? page.Confidence ?? ocrResult.AverageConfidence,
                 line.BoundingBox)))
             .Where(line => !string.IsNullOrWhiteSpace(line.Text))
             .ToList();
@@ -174,7 +332,7 @@ public partial class FieldExtractionService : IFieldExtractionService
         if (lines.Count > 0) return lines;
 
         return SplitLines(ocrResult.FullText)
-            .Select(line => new LineContext(line, NormalizeForSearch(line), 1, ocrResult.Confidence, null))
+            .Select(line => new LineContext(line, NormalizeForSearch(line), 1, ocrResult.AverageConfidence, null))
             .ToList();
     }
 
@@ -436,7 +594,7 @@ public partial class FieldExtractionService : IFieldExtractionService
             SourceText: line.Text));
     }
 
-    private static void AddFullTextFallbackCandidates(OcrResult ocrResult, List<FieldCandidate> candidates)
+    private static void AddFullTextFallbackCandidates(NormalizedOcrDocument ocrResult, List<FieldCandidate> candidates)
     {
         var fullText = GetFullText(ocrResult);
         if (string.IsNullOrWhiteSpace(fullText)) return;
@@ -468,11 +626,12 @@ public partial class FieldExtractionService : IFieldExtractionService
             fieldName, value, confidence, null, null,
             SourcePriority: 10,
             SourceMethod: "FullTextRegex",
-            SourceText: match.Value));
+            SourceText: match.Value,
+            SourceType: "Regex"));
     }
 
     private static void AddDocumentTypeCandidate(
-        OcrResult ocrResult,
+        NormalizedOcrDocument ocrResult,
         IReadOnlyList<LineContext> lines,
         List<FieldCandidate> candidates)
     {
@@ -484,17 +643,32 @@ public partial class FieldExtractionService : IFieldExtractionService
 
         var originalText = GetFullText(ocrResult);
 
+        // Most-specific category first: a restaurant/POS bill also matches the generic
+        // Receipt/Invoice patterns below, so it must be checked before them.
         string? documentType = null;
-        if (ReceiptDocumentPattern().IsMatch(originalText)
-            || searchText.Contains("bien lai", StringComparison.Ordinal)
-            || searchText.Contains("phieu thu", StringComparison.Ordinal)
-            || searchText.Contains("receipt", StringComparison.Ordinal)
-            || searchText.Contains("hoa don ban hang", StringComparison.Ordinal))
+        if (RestaurantMarkerPattern().IsMatch(originalText))
         {
-            // "Hóa đơn bán hàng" (sales receipt) is a POS-style receipt, not a VAT invoice —
-            // classify it as Receipt even though it contains the substring "hóa đơn", so
-            // SupplierTaxCode validation does not wrongly require a tax code for it.
+            documentType = nameof(DocumentType.RestaurantBill);
+        }
+        else if (searchText.Contains("hoa don ban hang", StringComparison.Ordinal))
+        {
+            // "Hóa đơn bán hàng" is the printed title of a POS/sales receipt, not a VAT
+            // invoice — classify it as PosReceipt even though it contains the substring
+            // "hóa đơn", so SupplierTaxCode validation does not wrongly require a tax code.
+            documentType = nameof(DocumentType.PosReceipt);
+        }
+        else if (ReceiptDocumentPattern().IsMatch(originalText)
+                 || searchText.Contains("bien lai", StringComparison.Ordinal)
+                 || searchText.Contains("phieu thu", StringComparison.Ordinal)
+                 || searchText.Contains("receipt", StringComparison.Ordinal))
+        {
             documentType = nameof(DocumentType.Receipt);
+        }
+        else if (searchText.Contains("gia tri gia tang", StringComparison.Ordinal))
+        {
+            // "Hóa đơn giá trị gia tăng" is the formal Vietnamese VAT invoice title —
+            // SupplierTaxCode is required for it.
+            documentType = nameof(DocumentType.VatInvoice);
         }
         else if (InvoiceDocumentPattern().IsMatch(originalText)
                  || searchText.Contains("hoa don", StringComparison.Ordinal)
@@ -513,11 +687,12 @@ public partial class FieldExtractionService : IFieldExtractionService
             lines.FirstOrDefault().BoundingBox,
             SourcePriority: 45,
             SourceMethod: "DocumentTypeHeuristic",
-            SourceText: documentType));
+            SourceText: documentType,
+            SourceType: "Heuristic"));
     }
 
     private static void AddCurrencyCandidate(
-        OcrResult ocrResult,
+        NormalizedOcrDocument ocrResult,
         IReadOnlyList<LineContext> lines,
         List<FieldCandidate> candidates)
     {
@@ -534,7 +709,8 @@ public partial class FieldExtractionService : IFieldExtractionService
             line.BoundingBox,
             SourcePriority: 35,
             SourceMethod: "CurrencyHeuristic",
-            SourceText: line.Text));
+            SourceText: line.Text,
+            SourceType: "Heuristic"));
     }
 
     /// <summary>
@@ -562,7 +738,8 @@ public partial class FieldExtractionService : IFieldExtractionService
             null,
             SourcePriority: 5,
             SourceMethod: "CurrencyDefault",
-            SourceText: null));
+            SourceText: null,
+            SourceType: "Heuristic"));
     }
 
     private static string? GetAmountFieldName(string searchText)
@@ -647,7 +824,7 @@ public partial class FieldExtractionService : IFieldExtractionService
         return value.Length <= maxLength ? value : value[..maxLength];
     }
 
-    private static string GetFullText(OcrResult ocrResult)
+    private static string GetFullText(NormalizedOcrDocument ocrResult)
     {
         if (!string.IsNullOrWhiteSpace(ocrResult.FullText)) return ocrResult.FullText;
         return string.Join('\n', ocrResult.Pages.Select(p => p.FullText));
@@ -687,7 +864,9 @@ public partial class FieldExtractionService : IFieldExtractionService
         BoundingBox? BoundingBox,
         int SourcePriority,
         string SourceMethod,
-        string? SourceText);
+        string? SourceText,
+        string SourceType = "Line",
+        string? ProviderFieldName = null);
 
     private readonly record struct LineContext(
         string Text,
@@ -719,6 +898,9 @@ public partial class FieldExtractionService : IFieldExtractionService
 
     [GeneratedRegex(@"(?:BIÊN\s*LAI|BIEN\s*LAI|PHIẾU\s*THU|PHIEU\s*THU|Receipt)", RegexOptions.IgnoreCase)]
     private static partial Regex ReceiptDocumentPattern();
+
+    [GeneratedRegex(@"(?:NHÀ\s*HÀNG|NHA\s*HANG|QUÁN\s*ĂN|QUAN\s*AN|Restaurant)", RegexOptions.IgnoreCase)]
+    private static partial Regex RestaurantMarkerPattern();
 
     [GeneratedRegex(@"(?:Mã\s*số\s*thuế|MST|Tax\s*code)\s*[:\-]?\s*([0-9][0-9\s\-.]{8,18})", RegexOptions.IgnoreCase)]
     private static partial Regex TaxCodeFallbackPattern();

@@ -9,10 +9,32 @@ public class CsvSummaryWriterTests
         string fileName = "invoice1.pdf",
         string providerName = "Fake",
         string? errorMessage = null) => new(
-        fileName, providerName, ModelId: "prebuilt-invoice", ProcessingDurationMs: 123.456,
-        PageCount: 1, FullTextLength: 42, AverageConfidence: 0.9876,
-        SupplierTaxCode: "0100109106", InvoiceDate: "2024-12-31", TotalAmount: "1236767",
-        WarningCount: 2, ErrorMessage: errorMessage);
+        FileName: fileName,
+        DocumentCategory: "VatInvoice",
+        ProviderName: providerName,
+        ModelId: "prebuilt-invoice",
+        Features: "keyValuePairs",
+        ProcessingDurationMs: 123.456,
+        PageCount: 1,
+        FullTextLength: 42,
+        LineCount: 8,
+        WordCount: 30,
+        ParagraphCount: 3,
+        TableCount: 1,
+        KeyValuePairCount: 5,
+        AverageConfidence: 0.9876,
+        ExtractedSupplierName: "CÔNG TY TNHH ABC",
+        ExtractedSupplierTaxCode: "0100109106",
+        ExtractedInvoiceNumber: "0001234",
+        ExtractedInvoiceDate: "2024-12-31",
+        ExtractedSubtotalAmount: "1030639",
+        ExtractedVatAmount: "206128",
+        ExtractedTotalAmount: "1236767",
+        ExtractedCurrency: "VND",
+        WarningCount: 2,
+        RawProviderResponsePath: "run/invoice1/Fake/raw-response.json",
+        NormalizedOcrResultPath: "run/invoice1/Fake/ocr-result.json",
+        ErrorMessage: errorMessage);
 
     [Fact]
     public async Task WriteAsync_WritesHeaderRow()
@@ -24,8 +46,13 @@ public class CsvSummaryWriterTests
             var lines = await File.ReadAllLinesAsync(path);
 
             Assert.Equal(
-                "FileName,ProviderName,ModelId,ProcessingDurationMs,PageCount,FullTextLength," +
-                "AverageConfidence,SupplierTaxCode,InvoiceDate,TotalAmount,WarningCount,ErrorMessage",
+                "FileName,DocumentCategory,ProviderName,ModelId,Features," +
+                "ProcessingDurationMs,PageCount,FullTextLength,LineCount,WordCount," +
+                "ParagraphCount,TableCount,KeyValuePairCount,AverageConfidence," +
+                "ExtractedSupplierName,ExtractedSupplierTaxCode,ExtractedInvoiceNumber," +
+                "ExtractedInvoiceDate,ExtractedSubtotalAmount,ExtractedVatAmount," +
+                "ExtractedTotalAmount,ExtractedCurrency,WarningCount," +
+                "RawProviderResponsePath,NormalizedOcrResultPath,ErrorMessage",
                 lines[0]);
         }
         finally
@@ -44,7 +71,9 @@ public class CsvSummaryWriterTests
             var lines = await File.ReadAllLinesAsync(path);
 
             Assert.Equal(
-                "invoice1.pdf,Fake,prebuilt-invoice,123.456,1,42,0.9876,0100109106,2024-12-31,1236767,2,",
+                "invoice1.pdf,VatInvoice,Fake,prebuilt-invoice,keyValuePairs,123.456,1,42,8,30," +
+                "3,1,5,0.9876,CÔNG TY TNHH ABC,0100109106,0001234,2024-12-31,1030639,206128," +
+                "1236767,VND,2,run/invoice1/Fake/raw-response.json,run/invoice1/Fake/ocr-result.json,",
                 lines[1]);
         }
         finally

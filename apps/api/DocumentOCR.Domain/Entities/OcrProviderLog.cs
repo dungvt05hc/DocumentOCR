@@ -20,5 +20,11 @@ public class OcrProviderLog : BaseEntity
     /// <summary>Raw provider response JSON, kept for debugging only — never used for business logic.</summary>
     public string? RawResponseJson { get; set; }
 
+    /// <summary>Storage path of the persisted raw provider response file, when <c>Ocr:StoreRawProviderResponse</c> is enabled.</summary>
+    public string? RawResponsePath { get; set; }
+
+    /// <summary>Storage path of the persisted normalized OCR result file, when <c>Ocr:StoreNormalizedOcrResult</c> is enabled.</summary>
+    public string? NormalizedResultPath { get; set; }
+
     public Document Document { get; set; } = null!;
 }

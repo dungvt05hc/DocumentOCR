@@ -99,7 +99,7 @@ public class DocumentProcessingServiceTests
     {
         await using var db = CreateDbContext();
         var document = await SeedDocumentAsync(db, DocumentStatus.Uploaded);
-        var failingProvider = new StubOcrProvider(new OcrResult { Success = false, ErrorMessage = "Provider quota exceeded.", PageCount = 0 });
+        var failingProvider = new StubOcrProvider(new NormalizedOcrDocument { Success = false, ProviderName = "Stub", ErrorMessage = "Provider quota exceeded.", PageCount = 0 });
         var sut = CreateSut(db, failingProvider, new FakeDocumentStorageService());
 
         await sut.ProcessAsync(document.Id);
@@ -183,8 +183,11 @@ public class DocumentProcessingServiceTests
 
     private sealed class FakeDocumentStorageService : IDocumentStorageService
     {
+        // ProcessAsync also writes raw/normalized OCR artifacts via SaveAsync when
+        // StoreRawProviderResponse/StoreNormalizedOcrResult are enabled (the default), so this
+        // must return a value rather than throw.
         public Task<string> SaveAsync(Stream fileStream, string originalFileName, string contentType, CancellationToken ct = default) =>
-            throw new NotSupportedException("Not used by ProcessAsync.");
+            Task.FromResult($"fake/{originalFileName}");
 
         public Task<Stream> GetStreamAsync(string storedPath, CancellationToken ct = default) =>
             Task.FromResult<Stream>(new MemoryStream([0x25, 0x50, 0x44, 0x46]));
@@ -200,9 +203,9 @@ public class DocumentProcessingServiceTests
     {
         await using var db = CreateDbContext();
         var document = await SeedDocumentAsync(db, DocumentStatus.Uploaded);
-        var provider = new StubOcrProvider(new OcrResult
+        var provider = new StubOcrProvider(new NormalizedOcrDocument
         {
-            Success = true, PageCount = 1, RawProviderResponseJson = "{\"raw\":true}"
+            Success = true, ProviderName = "Stub", PageCount = 1, RawProviderResponseJson = "{\"raw\":true}"
         });
         var sut = CreateSut(db, provider, new FakeDocumentStorageService(), new OcrOptions { StoreRawProviderResponse = true });
 
@@ -210,6 +213,7 @@ public class DocumentProcessingServiceTests
 
         var log = await db.OcrProviderLogs.SingleAsync(l => l.DocumentId == document.Id);
         Assert.Equal("{\"raw\":true}", log.RawResponseJson);
+        Assert.NotNull(log.RawResponsePath);
     }
 
     [Fact]
@@ -217,9 +221,9 @@ public class DocumentProcessingServiceTests
     {
         await using var db = CreateDbContext();
         var document = await SeedDocumentAsync(db, DocumentStatus.Uploaded);
-        var provider = new StubOcrProvider(new OcrResult
+        var provider = new StubOcrProvider(new NormalizedOcrDocument
         {
-            Success = true, PageCount = 1, RawProviderResponseJson = "{\"raw\":true}"
+            Success = true, ProviderName = "Stub", PageCount = 1, RawProviderResponseJson = "{\"raw\":true}"
         });
         var sut = CreateSut(db, provider, new FakeDocumentStorageService(), new OcrOptions { StoreRawProviderResponse = false });
 
@@ -227,13 +231,44 @@ public class DocumentProcessingServiceTests
 
         var log = await db.OcrProviderLogs.SingleAsync(l => l.DocumentId == document.Id);
         Assert.Null(log.RawResponseJson);
+        Assert.Null(log.RawResponsePath);
     }
 
-    private sealed class StubOcrProvider(OcrResult result) : IDocumentOcrProvider
+    // ── StoreNormalizedOcrResult ───────────────────────────────────────────────────
+
+    [Fact]
+    public async Task ProcessAsync_StoreNormalizedOcrResultTrue_PersistsNormalizedResultPath()
+    {
+        await using var db = CreateDbContext();
+        var document = await SeedDocumentAsync(db, DocumentStatus.Uploaded);
+        var provider = new StubOcrProvider(new NormalizedOcrDocument { Success = true, ProviderName = "Stub", PageCount = 1 });
+        var sut = CreateSut(db, provider, new FakeDocumentStorageService(), new OcrOptions { StoreNormalizedOcrResult = true });
+
+        await sut.ProcessAsync(document.Id);
+
+        var log = await db.OcrProviderLogs.SingleAsync(l => l.DocumentId == document.Id);
+        Assert.NotNull(log.NormalizedResultPath);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_StoreNormalizedOcrResultFalse_DoesNotPersistNormalizedResultPath()
+    {
+        await using var db = CreateDbContext();
+        var document = await SeedDocumentAsync(db, DocumentStatus.Uploaded);
+        var provider = new StubOcrProvider(new NormalizedOcrDocument { Success = true, ProviderName = "Stub", PageCount = 1 });
+        var sut = CreateSut(db, provider, new FakeDocumentStorageService(), new OcrOptions { StoreNormalizedOcrResult = false });
+
+        await sut.ProcessAsync(document.Id);
+
+        var log = await db.OcrProviderLogs.SingleAsync(l => l.DocumentId == document.Id);
+        Assert.Null(log.NormalizedResultPath);
+    }
+
+    private sealed class StubOcrProvider(NormalizedOcrDocument result) : IDocumentOcrProvider
     {
         public string ProviderName => "Stub";
 
-        public Task<OcrResult> AnalyzeAsync(DocumentInput input, CancellationToken ct = default) =>
+        public Task<NormalizedOcrDocument> AnalyzeAsync(DocumentInput input, CancellationToken ct = default) =>
             Task.FromResult(result);
     }
 
@@ -241,7 +276,7 @@ public class DocumentProcessingServiceTests
     {
         public string ProviderName => "Throwing";
 
-        public Task<OcrResult> AnalyzeAsync(DocumentInput input, CancellationToken ct = default) =>
+        public Task<NormalizedOcrDocument> AnalyzeAsync(DocumentInput input, CancellationToken ct = default) =>
             throw new InvalidOperationException("Simulated OCR provider failure.");
     }
 }

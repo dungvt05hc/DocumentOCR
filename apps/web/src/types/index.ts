@@ -53,6 +53,8 @@ export interface ExtractedFieldDto {
   normalizedValue: string | null;
   confidence: number | null;
   pageNumber: number | null;
+  sourceType: string | null;
+  providerFieldName: string | null;
   isRequired: boolean;
   isEditedByUser: boolean;
   editedAt: string | null;

@@ -8,9 +8,13 @@ public static class CsvSummaryWriter
 {
     private static readonly string[] Header =
     [
-        "FileName", "ProviderName", "ModelId", "ProcessingDurationMs", "PageCount",
-        "FullTextLength", "AverageConfidence", "SupplierTaxCode", "InvoiceDate",
-        "TotalAmount", "WarningCount", "ErrorMessage"
+        "FileName", "DocumentCategory", "ProviderName", "ModelId", "Features",
+        "ProcessingDurationMs", "PageCount", "FullTextLength", "LineCount", "WordCount",
+        "ParagraphCount", "TableCount", "KeyValuePairCount", "AverageConfidence",
+        "ExtractedSupplierName", "ExtractedSupplierTaxCode", "ExtractedInvoiceNumber",
+        "ExtractedInvoiceDate", "ExtractedSubtotalAmount", "ExtractedVatAmount",
+        "ExtractedTotalAmount", "ExtractedCurrency", "WarningCount",
+        "RawProviderResponsePath", "NormalizedOcrResultPath", "ErrorMessage"
     ];
 
     public static async Task WriteAsync(string filePath, IReadOnlyList<BenchmarkCsvRow> rows, CancellationToken ct)
@@ -23,16 +27,30 @@ public static class CsvSummaryWriter
             var fields = new[]
             {
                 row.FileName,
+                row.DocumentCategory ?? "",
                 row.ProviderName,
                 row.ModelId ?? "",
+                row.Features,
                 row.ProcessingDurationMs.ToString(CultureInfo.InvariantCulture),
                 row.PageCount.ToString(CultureInfo.InvariantCulture),
                 row.FullTextLength.ToString(CultureInfo.InvariantCulture),
+                row.LineCount.ToString(CultureInfo.InvariantCulture),
+                row.WordCount.ToString(CultureInfo.InvariantCulture),
+                row.ParagraphCount.ToString(CultureInfo.InvariantCulture),
+                row.TableCount.ToString(CultureInfo.InvariantCulture),
+                row.KeyValuePairCount.ToString(CultureInfo.InvariantCulture),
                 row.AverageConfidence?.ToString("F4", CultureInfo.InvariantCulture) ?? "",
-                row.SupplierTaxCode ?? "",
-                row.InvoiceDate ?? "",
-                row.TotalAmount ?? "",
+                row.ExtractedSupplierName ?? "",
+                row.ExtractedSupplierTaxCode ?? "",
+                row.ExtractedInvoiceNumber ?? "",
+                row.ExtractedInvoiceDate ?? "",
+                row.ExtractedSubtotalAmount ?? "",
+                row.ExtractedVatAmount ?? "",
+                row.ExtractedTotalAmount ?? "",
+                row.ExtractedCurrency ?? "",
                 row.WarningCount.ToString(CultureInfo.InvariantCulture),
+                row.RawProviderResponsePath ?? "",
+                row.NormalizedOcrResultPath ?? "",
                 row.ErrorMessage ?? ""
             };
 

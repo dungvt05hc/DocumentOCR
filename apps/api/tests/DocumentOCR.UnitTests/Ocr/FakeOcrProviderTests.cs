@@ -185,8 +185,8 @@ public class FakeOcrProviderTests
     {
         var result = await _sut.AnalyzeAsync(MakeInput());
 
-        Assert.NotNull(result.Confidence);
-        Assert.True(result.Confidence >= 0.95);
+        Assert.NotNull(result.AverageConfidence);
+        Assert.True(result.AverageConfidence >= 0.95);
     }
 
     // ── Cost & timing ─────────────────────────────────────────────────────────────

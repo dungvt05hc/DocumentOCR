@@ -37,7 +37,7 @@ internal sealed class BenchmarkFileProcessor(
     {
         Directory.CreateDirectory(outputDir);
 
-        OcrResult ocrResult;
+        NormalizedOcrDocument ocrResult;
         try
         {
             await using var content = new MemoryStream(fileBytes, writable: false);
@@ -60,20 +60,24 @@ internal sealed class BenchmarkFileProcessor(
                 ct);
 
             return new BenchmarkCsvRow(
-                fileName, provider.ProviderName, ModelId: null, ProcessingDurationMs: 0,
-                PageCount: 0, FullTextLength: 0, AverageConfidence: null,
-                SupplierTaxCode: null, InvoiceDate: null, TotalAmount: null, WarningCount: 0,
-                ErrorMessage: ex.Message);
+                fileName, DocumentCategory: null, provider.ProviderName, ModelId: null, Features: "",
+                ProcessingDurationMs: 0, PageCount: 0, FullTextLength: 0, LineCount: 0, WordCount: 0,
+                ParagraphCount: 0, TableCount: 0, KeyValuePairCount: 0, AverageConfidence: null,
+                ExtractedSupplierName: null, ExtractedSupplierTaxCode: null, ExtractedInvoiceNumber: null,
+                ExtractedInvoiceDate: null, ExtractedSubtotalAmount: null, ExtractedVatAmount: null,
+                ExtractedTotalAmount: null, ExtractedCurrency: null, WarningCount: 0,
+                RawProviderResponsePath: null, NormalizedOcrResultPath: null, ErrorMessage: ex.Message);
         }
 
         var fields = extraction.Extract(documentId, ocrResult);
         normalization.NormalizeFields(fields);
         var warnings = validation.Validate(documentId, fields);
 
-        await WriteRawResponseAsync(outputDir, ocrResult, ct);
-        await File.WriteAllTextAsync(
-            Path.Combine(outputDir, "ocr-result.json"),
-            JsonSerializer.Serialize(ocrResult, JsonOptions), ct);
+        var rawResponsePath = await WriteRawResponseAsync(outputDir, ocrResult, ct);
+
+        var ocrResultPath = Path.Combine(outputDir, "ocr-result.json");
+        await File.WriteAllTextAsync(ocrResultPath, JsonSerializer.Serialize(ocrResult, JsonOptions), ct);
+
         await File.WriteAllTextAsync(
             Path.Combine(outputDir, "extracted-fields.json"),
             JsonSerializer.Serialize(fields, JsonOptions), ct);
@@ -83,23 +87,38 @@ internal sealed class BenchmarkFileProcessor(
 
         return new BenchmarkCsvRow(
             FileName: fileName,
+            DocumentCategory: FieldValue(fields, FieldName.DocumentType),
             ProviderName: provider.ProviderName,
             ModelId: ocrResult.ModelId,
+            Features: string.Join('|', ocrResult.Features),
             ProcessingDurationMs: ocrResult.ProcessingTimeMs,
             PageCount: ocrResult.PageCount,
             FullTextLength: ocrResult.FullText.Length,
+            LineCount: ocrResult.Lines.Count,
+            WordCount: ocrResult.Words.Count,
+            ParagraphCount: ocrResult.Paragraphs.Count,
+            TableCount: ocrResult.Tables.Count,
+            KeyValuePairCount: ocrResult.KeyValuePairs.Count,
             AverageConfidence: AverageFieldConfidence(fields),
-            SupplierTaxCode: FieldValue(fields, FieldName.SupplierTaxCode),
-            InvoiceDate: FieldValue(fields, FieldName.InvoiceDate),
-            TotalAmount: FieldValue(fields, FieldName.TotalAmount),
+            ExtractedSupplierName: FieldValue(fields, FieldName.SupplierName),
+            ExtractedSupplierTaxCode: FieldValue(fields, FieldName.SupplierTaxCode),
+            ExtractedInvoiceNumber: FieldValue(fields, FieldName.InvoiceNumber),
+            ExtractedInvoiceDate: FieldValue(fields, FieldName.InvoiceDate),
+            ExtractedSubtotalAmount: FieldValue(fields, FieldName.SubtotalAmount),
+            ExtractedVatAmount: FieldValue(fields, FieldName.VatAmount),
+            ExtractedTotalAmount: FieldValue(fields, FieldName.TotalAmount),
+            ExtractedCurrency: FieldValue(fields, FieldName.Currency),
             WarningCount: warnings.Count,
+            RawProviderResponsePath: rawResponsePath,
+            NormalizedOcrResultPath: ocrResultPath,
             ErrorMessage: ocrResult.Success ? null : ocrResult.ErrorMessage);
     }
 
     // ── AverageConfidence: mean confidence across the extracted canonical fields (SupplierName,
     // SupplierTaxCode, InvoiceNumber, ... TotalAmount) — this reflects field-extraction quality,
-    // which is what this benchmark compares between providers. OcrResult.Confidence is not used
-    // because AzureDocumentIntelligenceProvider does not currently populate it. ──────────────────
+    // which is what this benchmark compares between providers. NormalizedOcrDocument.AverageConfidence
+    // is not used because AzureDocumentIntelligenceProvider derives it from word confidences, which
+    // isn't directly comparable to FakeOcrProvider's flat document-level value. ──────────────────
     private static double? AverageFieldConfidence(IReadOnlyList<ExtractedField> fields)
     {
         var confidences = fields.Where(f => f.Confidence.HasValue).Select(f => f.Confidence!.Value).ToList();
@@ -113,7 +132,7 @@ internal sealed class BenchmarkFileProcessor(
         return !string.IsNullOrWhiteSpace(field.NormalizedValue) ? field.NormalizedValue : field.RawValue;
     }
 
-    private static async Task WriteRawResponseAsync(string outputDir, OcrResult ocrResult, CancellationToken ct)
+    private static async Task<string?> WriteRawResponseAsync(string outputDir, NormalizedOcrDocument ocrResult, CancellationToken ct)
     {
         var path = Path.Combine(outputDir, "raw-response.json");
 
@@ -123,7 +142,7 @@ internal sealed class BenchmarkFileProcessor(
                 path,
                 """{ "note": "This provider did not produce a raw response (e.g. FakeOcrProvider, or the request failed before Azure responded)." }""",
                 ct);
-            return;
+            return null;
         }
 
         // RawProviderResponseJson is already a JSON string (Azure's raw HTTP response body) —
@@ -137,5 +156,7 @@ internal sealed class BenchmarkFileProcessor(
         {
             await File.WriteAllTextAsync(path, ocrResult.RawProviderResponseJson, ct);
         }
+
+        return path;
     }
 }

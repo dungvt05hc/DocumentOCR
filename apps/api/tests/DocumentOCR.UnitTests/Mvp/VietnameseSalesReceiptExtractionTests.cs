@@ -25,7 +25,7 @@ public class VietnameseSalesReceiptExtractionTests
         AssertNormalized(fields, FieldName.SubtotalAmount, "95000");
         AssertNormalized(fields, FieldName.TotalAmount, "85000");
         AssertNormalized(fields, FieldName.Currency, "VND");
-        AssertNormalized(fields, FieldName.DocumentType, nameof(DocumentType.Receipt));
+        AssertNormalized(fields, FieldName.DocumentType, nameof(DocumentType.PosReceipt));
     }
 
     [Fact]

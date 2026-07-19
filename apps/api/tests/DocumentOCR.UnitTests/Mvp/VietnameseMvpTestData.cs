@@ -53,19 +53,20 @@ internal static class VietnameseMvpTestData
         "Tổng: 85.000"
     ];
 
-    public static OcrResult OcrFromLines(params string[] lines)
+    public static NormalizedOcrDocument OcrFromLines(params string[] lines)
     {
         var ocrLines = lines
-            .Select((text, index) => new OcrLineResult
+            .Select((text, index) => new OcrLine
             {
                 LineNumber = index + 1,
                 Text = text,
+                PageNumber = 1,
                 Confidence = 0.96,
                 BoundingBox = BoundingBox.FromRect(0, index * 0.3, 8, 0.25)
             })
             .ToList();
 
-        var page = new OcrPageResult
+        var page = new OcrPage
         {
             PageNumber = 1,
             FullText = string.Join('\n', lines),
@@ -73,12 +74,13 @@ internal static class VietnameseMvpTestData
             Lines = ocrLines
         };
 
-        return new OcrResult
+        return new NormalizedOcrDocument
         {
             Success = true,
+            ProviderName = "Test",
             FullText = page.FullText,
             Pages = [page],
-            Confidence = 0.96,
+            AverageConfidence = 0.96,
             PageCount = 1
         };
     }

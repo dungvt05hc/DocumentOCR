@@ -1,16 +1,30 @@
 namespace DocumentOCR.OcrBenchmark;
 
-/// <summary>One row of the benchmark summary CSV — one (file, provider) combination.</summary>
+/// <summary>One row of the benchmark summary CSV — one (file, provider/model) combination.</summary>
 public sealed record BenchmarkCsvRow(
     string FileName,
+    string? DocumentCategory,
     string ProviderName,
     string? ModelId,
+    string Features,
     double ProcessingDurationMs,
     int PageCount,
     int FullTextLength,
+    int LineCount,
+    int WordCount,
+    int ParagraphCount,
+    int TableCount,
+    int KeyValuePairCount,
     double? AverageConfidence,
-    string? SupplierTaxCode,
-    string? InvoiceDate,
-    string? TotalAmount,
+    string? ExtractedSupplierName,
+    string? ExtractedSupplierTaxCode,
+    string? ExtractedInvoiceNumber,
+    string? ExtractedInvoiceDate,
+    string? ExtractedSubtotalAmount,
+    string? ExtractedVatAmount,
+    string? ExtractedTotalAmount,
+    string? ExtractedCurrency,
     int WarningCount,
+    string? RawProviderResponsePath,
+    string? NormalizedOcrResultPath,
     string? ErrorMessage);

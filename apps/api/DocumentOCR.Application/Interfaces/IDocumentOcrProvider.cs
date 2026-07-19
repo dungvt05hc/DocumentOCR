@@ -11,6 +11,6 @@ public interface IDocumentOcrProvider
     /// <summary>Human-readable provider identifier (e.g. "AzureDocumentIntelligence", "Fake").</summary>
     string ProviderName { get; }
 
-    /// <summary>Analyse a document and return structured OCR results.</summary>
-    Task<OcrResult> AnalyzeAsync(DocumentInput input, CancellationToken ct = default);
+    /// <summary>Analyse a document and return a provider-neutral normalized OCR document.</summary>
+    Task<NormalizedOcrDocument> AnalyzeAsync(DocumentInput input, CancellationToken ct = default);
 }

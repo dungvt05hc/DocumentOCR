@@ -16,8 +16,19 @@ public partial class FieldValidationService : IFieldValidationService
     [
         nameof(FieldName.SupplierName),
         nameof(FieldName.InvoiceNumber),
-        nameof(FieldName.InvoiceDate),
         nameof(FieldName.TotalAmount)
+    ];
+
+    /// <summary>
+    /// Document categories where a Vietnamese tax code is not expected on the document itself
+    /// (POS/sales receipts and restaurant bills commonly omit it). All other categories —
+    /// including the generic <see cref="DocumentType.Invoice"/> fallback — require it.
+    /// </summary>
+    private static readonly HashSet<DocumentType> TaxCodeOptionalCategories =
+    [
+        DocumentType.Receipt,
+        DocumentType.PosReceipt,
+        DocumentType.RestaurantBill
     ];
 
     public IReadOnlyList<ValidationWarning> Validate(Guid documentId, IEnumerable<ExtractedField> fields)
@@ -58,7 +69,7 @@ public partial class FieldValidationService : IFieldValidationService
                 $"Required field '{required}' is missing or empty.");
         }
 
-        if (documentType != DocumentType.Receipt && !HasValue(fields, nameof(FieldName.SupplierTaxCode)))
+        if (!TaxCodeOptionalCategories.Contains(documentType) && !HasValue(fields, nameof(FieldName.SupplierTaxCode)))
         {
             AddWarning(
                 warnings,
@@ -67,6 +78,24 @@ public partial class FieldValidationService : IFieldValidationService
                 "REQUIRED_FIELD_MISSING",
                 ValidationSeverity.High,
                 "SupplierTaxCode is required for invoices.");
+        }
+
+        // InvoiceDate is expected everywhere, but receipts (POS/sales/restaurant) frequently
+        // print it in a shorthand or omit it — that's a lower-severity concern there than on a
+        // formal VAT invoice, where a missing date is a High-severity data-quality problem.
+        if (!HasValue(fields, nameof(FieldName.InvoiceDate)))
+        {
+            var severity = TaxCodeOptionalCategories.Contains(documentType)
+                ? ValidationSeverity.Warning
+                : ValidationSeverity.High;
+
+            AddWarning(
+                warnings,
+                documentId,
+                nameof(FieldName.InvoiceDate),
+                "REQUIRED_FIELD_MISSING",
+                severity,
+                $"Required field '{nameof(FieldName.InvoiceDate)}' is missing or empty.");
         }
     }
 

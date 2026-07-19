@@ -1,3 +1,5 @@
+using System.Text;
+using System.Text.Json;
 using DocumentOCR.Application.Interfaces;
 using DocumentOCR.Application.Models;
 using DocumentOCR.Domain.Entities;
@@ -106,6 +108,8 @@ public class DocumentProcessingService : IDocumentProcessingService
                 ocrResult.ProcessingTimeMs,
                 ocrResult.EstimatedCost);
 
+            ocrResult = await PersistOcrArtifactsAsync(documentId, ocrResult, ct);
+
             _db.OcrProviderLogs.Add(new OcrProviderLog
             {
                 DocumentId = documentId,
@@ -116,7 +120,9 @@ public class DocumentProcessingService : IDocumentProcessingService
                 EstimatedCost = ocrResult.EstimatedCost,
                 Success = ocrResult.Success,
                 ErrorMessage = ocrResult.ErrorMessage,
-                RawResponseJson = _ocrOptions.StoreRawProviderResponse ? ocrResult.RawProviderResponseJson : null
+                RawResponseJson = _ocrOptions.StoreRawProviderResponse ? ocrResult.RawProviderResponseJson : null,
+                RawResponsePath = ocrResult.RawProviderResponsePath,
+                NormalizedResultPath = ocrResult.NormalizedOcrResultPath
             });
 
             if (!ocrResult.Success)
@@ -199,6 +205,51 @@ public class DocumentProcessingService : IDocumentProcessingService
                 _logger.LogError(saveEx, "Failed to save failure status for document {DocumentId}", documentId);
             }
         }
+    }
+
+    private static readonly JsonSerializerOptions ArtifactJsonOptions = new()
+    {
+        WriteIndented = true,
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+    };
+
+    /// <summary>
+    /// Writes the raw provider response and/or the full normalized OCR result to storage
+    /// (gated by <see cref="OcrOptions.StoreRawProviderResponse"/> / <see cref="OcrOptions.StoreNormalizedOcrResult"/>)
+    /// and returns an updated <see cref="NormalizedOcrDocument"/> carrying their storage paths.
+    /// A provider that returned an unsuccessful result has nothing meaningful to persist here.
+    /// </summary>
+    private async Task<NormalizedOcrDocument> PersistOcrArtifactsAsync(
+        Guid documentId, NormalizedOcrDocument ocrResult, CancellationToken ct)
+    {
+        if (!ocrResult.Success) return ocrResult;
+
+        string? rawPath = null;
+        if (_ocrOptions.StoreRawProviderResponse && !string.IsNullOrWhiteSpace(ocrResult.RawProviderResponseJson))
+        {
+            rawPath = await WriteJsonArtifactAsync(
+                ocrResult.RawProviderResponseJson, $"{documentId}-raw-response.json", ct);
+        }
+
+        string? normalizedPath = null;
+        if (_ocrOptions.StoreNormalizedOcrResult)
+        {
+            var normalizedJson = JsonSerializer.Serialize(ocrResult, ArtifactJsonOptions);
+            normalizedPath = await WriteJsonArtifactAsync(
+                normalizedJson, $"{documentId}-normalized-ocr-result.json", ct);
+        }
+
+        return ocrResult with
+        {
+            RawProviderResponsePath = rawPath,
+            NormalizedOcrResultPath = normalizedPath
+        };
+    }
+
+    private async Task<string> WriteJsonArtifactAsync(string json, string fileName, CancellationToken ct)
+    {
+        using var stream = new MemoryStream(Encoding.UTF8.GetBytes(json));
+        return await _storage.SaveAsync(stream, fileName, "application/json", ct);
     }
 
     private void RemoveStaleProcessingArtifacts(Document document)

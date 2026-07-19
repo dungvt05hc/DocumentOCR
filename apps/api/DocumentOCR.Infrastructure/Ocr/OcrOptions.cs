@@ -14,4 +14,12 @@ public sealed class OcrOptions
     /// once the Azure integration is trusted.
     /// </summary>
     public bool StoreRawProviderResponse { get; set; } = true;
+
+    /// <summary>
+    /// Whether to serialize the full <c>NormalizedOcrDocument</c> to a JSON file via
+    /// <see cref="Application.Interfaces.IDocumentStorageService"/> and record its path on
+    /// <c>OcrProviderLog.NormalizedResultPath</c>. Defaults to true (useful for debugging
+    /// extraction issues); set false to reduce storage usage once the pipeline is trusted.
+    /// </summary>
+    public bool StoreNormalizedOcrResult { get; set; } = true;
 }

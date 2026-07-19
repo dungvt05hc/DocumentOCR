@@ -182,6 +182,8 @@ public class DocumentService
             PageNumber = f.PageNumber,
             ExtractionMethod = f.ExtractionMethod,
             SourceText = f.SourceText,
+            SourceType = f.SourceType,
+            ProviderFieldName = f.ProviderFieldName,
             IsRequired = f.IsRequired,
             IsEditedByUser = f.IsEditedByUser,
             EditedAt = f.EditedAt
@@ -209,7 +211,9 @@ public class DocumentService
             ProcessingTimeMs = latest.ProcessingTimeMs,
             EstimatedCost = latest.EstimatedCost,
             Success = latest.Success,
-            ErrorMessage = latest.ErrorMessage
+            ErrorMessage = latest.ErrorMessage,
+            RawResponsePath = latest.RawResponsePath,
+            NormalizedResultPath = latest.NormalizedResultPath
         };
     }
 }

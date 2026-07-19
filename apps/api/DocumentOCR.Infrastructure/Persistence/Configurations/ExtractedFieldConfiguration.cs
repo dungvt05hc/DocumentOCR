@@ -15,6 +15,8 @@ public class ExtractedFieldConfiguration : IEntityTypeConfiguration<ExtractedFie
         builder.Property(f => f.BoundingBoxJson).HasMaxLength(1000);
         builder.Property(f => f.ExtractionMethod).HasMaxLength(50);
         builder.Property(f => f.SourceText).HasMaxLength(300);
+        builder.Property(f => f.SourceType).HasMaxLength(50);
+        builder.Property(f => f.ProviderFieldName).HasMaxLength(200);
 
         builder.HasIndex(f => new { f.DocumentId, f.FieldName }).IsUnique();
     }

@@ -19,6 +19,8 @@ public class ExtractedFieldDto
     public int? PageNumber { get; set; }
     public string? ExtractionMethod { get; set; }
     public string? SourceText { get; set; }
+    public string? SourceType { get; set; }
+    public string? ProviderFieldName { get; set; }
     public bool IsRequired { get; set; }
     public bool IsEditedByUser { get; set; }
     public DateTime? EditedAt { get; set; }
@@ -41,4 +43,6 @@ public class OcrProviderLogDto
     public decimal EstimatedCost { get; set; }
     public bool Success { get; set; }
     public string? ErrorMessage { get; set; }
+    public string? RawResponsePath { get; set; }
+    public string? NormalizedResultPath { get; set; }
 }

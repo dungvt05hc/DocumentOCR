@@ -39,8 +39,8 @@ public class AzureDocumentIntelligenceProviderLayoutMappingTests
         Assert.Equal(2, result.ColumnCount);
         Assert.Equal(1, result.PageNumber);
         Assert.Equal(2, result.Cells.Count);
-        Assert.Contains(result.Cells, c => c.Content == "Mặt hàng" && c.RowIndex == 0 && c.ColumnIndex == 0);
-        Assert.Contains(result.Cells, c => c.Content == "Trà sữa" && c.RowIndex == 1 && c.ColumnIndex == 0);
+        Assert.Contains(result.Cells, c => c.Text == "Mặt hàng" && c.RowIndex == 0 && c.ColumnIndex == 0);
+        Assert.Contains(result.Cells, c => c.Text == "Trà sữa" && c.RowIndex == 1 && c.ColumnIndex == 0);
     }
 
     [Fact]
@@ -53,7 +53,7 @@ public class AzureDocumentIntelligenceProviderLayoutMappingTests
 
         var result = AzureDocumentIntelligenceProvider.BuildParagraphResult(paragraph);
 
-        Assert.Equal("MOTA CAFE", result.Content);
+        Assert.Equal("MOTA CAFE", result.Text);
         Assert.Equal(1, result.PageNumber);
         Assert.NotNull(result.BoundingBox);
     }
@@ -70,8 +70,8 @@ public class AzureDocumentIntelligenceProviderLayoutMappingTests
 
         var result = AzureDocumentIntelligenceProvider.BuildKeyValuePairResult(kvp);
 
-        Assert.Equal("Tổng", result.Key);
-        Assert.Equal("85.000", result.Value);
+        Assert.Equal("Tổng", result.KeyText);
+        Assert.Equal("85.000", result.ValueText);
         Assert.Equal(0.91, result.Confidence!.Value, 2);
         Assert.Equal(1, result.PageNumber);
     }
@@ -86,7 +86,7 @@ public class AzureDocumentIntelligenceProviderLayoutMappingTests
 
         var result = AzureDocumentIntelligenceProvider.BuildKeyValuePairResult(kvp);
 
-        Assert.Null(result.Value);
+        Assert.Null(result.ValueText);
         Assert.Null(result.ValueBoundingBox);
     }
 }

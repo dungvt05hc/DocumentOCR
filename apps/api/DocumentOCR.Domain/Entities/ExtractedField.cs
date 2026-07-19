@@ -22,6 +22,12 @@ public class ExtractedField : BaseEntity
     /// <summary>The raw line/text the winning candidate was derived from, for debugging and audit.</summary>
     public string? SourceText { get; set; }
 
+    /// <summary>Coarse category of <see cref="ExtractionMethod"/> (e.g. "StructuredField", "KeyValuePair", "Line", "Table", "Regex", "Heuristic").</summary>
+    public string? SourceType { get; set; }
+
+    /// <summary>The provider's own field/key name before mapping to a canonical <see cref="FieldName"/> (e.g. Azure's "VendorName" or a layout key-value pair's key text).</summary>
+    public string? ProviderFieldName { get; set; }
+
     public bool IsRequired { get; set; }
     public bool IsEditedByUser { get; set; }
     public DateTime? EditedAt { get; set; }
