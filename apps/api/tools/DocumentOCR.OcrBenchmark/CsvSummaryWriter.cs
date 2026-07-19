@@ -11,10 +11,16 @@ public static class CsvSummaryWriter
         "FileName", "DocumentCategory", "ProviderName", "ModelId", "Features",
         "ProcessingDurationMs", "PageCount", "FullTextLength", "LineCount", "WordCount",
         "ParagraphCount", "TableCount", "KeyValuePairCount", "AverageConfidence",
-        "ExtractedSupplierName", "ExtractedSupplierTaxCode", "ExtractedInvoiceNumber",
-        "ExtractedInvoiceDate", "ExtractedSubtotalAmount", "ExtractedVatAmount",
-        "ExtractedTotalAmount", "ExtractedCurrency", "WarningCount",
-        "RawProviderResponsePath", "NormalizedOcrResultPath", "ErrorMessage"
+        "ExtractedSupplierName", "ExpectedSupplierName", "SupplierNameMatched",
+        "ExtractedSupplierTaxCode", "ExpectedSupplierTaxCode", "TaxCodeMatched",
+        "ExtractedInvoiceNumber", "ExpectedInvoiceNumber", "InvoiceNumberMatched",
+        "ExtractedInvoiceDate", "ExpectedInvoiceDate", "InvoiceDateMatched",
+        "ExtractedSubtotalAmount", "ExpectedSubtotalAmount", "SubtotalMatched",
+        "ExtractedVatAmount", "ExpectedVatAmount", "VatMatched",
+        "ExtractedTotalAmount", "ExpectedTotalAmount", "TotalMatched",
+        "ExtractedCurrency", "ExpectedCurrency", "CurrencyMatched",
+        "FieldAccuracyPercent",
+        "WarningCount", "RawProviderResponsePath", "NormalizedOcrResultPath", "ErrorMessage"
     ];
 
     public static async Task WriteAsync(string filePath, IReadOnlyList<BenchmarkCsvRow> rows, CancellationToken ct)
@@ -41,13 +47,30 @@ public static class CsvSummaryWriter
                 row.KeyValuePairCount.ToString(CultureInfo.InvariantCulture),
                 row.AverageConfidence?.ToString("F4", CultureInfo.InvariantCulture) ?? "",
                 row.ExtractedSupplierName ?? "",
+                row.ExpectedSupplierName ?? "",
+                FormatMatch(row.SupplierNameMatched),
                 row.ExtractedSupplierTaxCode ?? "",
+                row.ExpectedSupplierTaxCode ?? "",
+                FormatMatch(row.TaxCodeMatched),
                 row.ExtractedInvoiceNumber ?? "",
+                row.ExpectedInvoiceNumber ?? "",
+                FormatMatch(row.InvoiceNumberMatched),
                 row.ExtractedInvoiceDate ?? "",
+                row.ExpectedInvoiceDate ?? "",
+                FormatMatch(row.InvoiceDateMatched),
                 row.ExtractedSubtotalAmount ?? "",
+                row.ExpectedSubtotalAmount ?? "",
+                FormatMatch(row.SubtotalMatched),
                 row.ExtractedVatAmount ?? "",
+                row.ExpectedVatAmount ?? "",
+                FormatMatch(row.VatMatched),
                 row.ExtractedTotalAmount ?? "",
+                row.ExpectedTotalAmount ?? "",
+                FormatMatch(row.TotalMatched),
                 row.ExtractedCurrency ?? "",
+                row.ExpectedCurrency ?? "",
+                FormatMatch(row.CurrencyMatched),
+                row.FieldAccuracyPercent?.ToString("F2", CultureInfo.InvariantCulture) ?? "",
                 row.WarningCount.ToString(CultureInfo.InvariantCulture),
                 row.RawProviderResponsePath ?? "",
                 row.NormalizedOcrResultPath ?? "",
@@ -59,6 +82,14 @@ public static class CsvSummaryWriter
 
         await File.WriteAllTextAsync(filePath, sb.ToString(), Encoding.UTF8, ct);
     }
+
+    // Blank means "not evaluated" (no ground truth value for that field) rather than a match/mismatch.
+    private static string FormatMatch(bool? matched) => matched switch
+    {
+        true => "True",
+        false => "False",
+        null => ""
+    };
 
     private static string Escape(string field)
     {

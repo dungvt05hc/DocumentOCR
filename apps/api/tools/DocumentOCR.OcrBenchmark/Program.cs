@@ -106,6 +106,20 @@ var processor = new BenchmarkFileProcessor(
     new FieldNormalizationService(),
     new FieldValidationService());
 
+// Ground truth is optional: comparison columns are populated when present, left blank otherwise.
+var groundTruthPath = options.GroundTruthPath ?? Path.Combine(options.InputDir, "ground-truth.csv");
+var groundTruth = await GroundTruthCsvReader.LoadAsync(groundTruthPath, CancellationToken.None);
+if (groundTruth.Count > 0)
+{
+    Console.WriteLine($"Loaded {groundTruth.Count} ground-truth row(s) from {groundTruthPath}");
+}
+else
+{
+    Console.WriteLine(
+        $"No ground truth found at {groundTruthPath} — Expected*/*Matched/FieldAccuracyPercent " +
+        "columns will be blank. See docs/product-context.md or pass --ground-truth <file>.");
+}
+
 var rows = new List<BenchmarkCsvRow>();
 
 foreach (var filePath in files)
@@ -136,8 +150,11 @@ foreach (var filePath in files)
         // sample document sit as sibling folders — the natural layout for comparison.
         var fileOutputDir = Path.Combine(runDir, fileName, label);
 
+        groundTruth.TryGetValue(fileName, out var fileGroundTruth);
+
         var row = await processor.ProcessAsync(
-            provider, documentId, fileBytes, fileName, contentType, fileOutputDir, CancellationToken.None);
+            provider, documentId, fileBytes, fileName, contentType, fileOutputDir, CancellationToken.None,
+            fileGroundTruth);
 
         rows.Add(row);
     }
@@ -165,6 +182,12 @@ internal sealed class CliOptions
     /// </summary>
     public IReadOnlyList<string>? Models { get; init; }
 
+    /// <summary>
+    /// Path to the ground-truth CSV, from --ground-truth. Null means "look for
+    /// ground-truth.csv directly inside --input" (see Program.cs).
+    /// </summary>
+    public string? GroundTruthPath { get; init; }
+
     // Anchored to this source file's own directory (not the invoking shell's working
     // directory) so the default --input/--output always resolve under this tool's project
     // folder, matching the scoped .gitignore entries, regardless of where `dotnet run` is
@@ -177,6 +200,7 @@ internal sealed class CliOptions
         string? input = null;
         string? output = null;
         string? models = null;
+        string? groundTruth = null;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -190,6 +214,9 @@ internal sealed class CliOptions
                     break;
                 case "--models" or "-m" when i + 1 < args.Length:
                     models = args[++i];
+                    break;
+                case "--ground-truth" or "-g" when i + 1 < args.Length:
+                    groundTruth = args[++i];
                     break;
                 case "--help" or "-h":
                     PrintUsage();
@@ -205,22 +232,26 @@ internal sealed class CliOptions
         {
             InputDir = Path.GetFullPath(input ?? Path.Combine(ToolDir(), "data")),
             OutputDir = Path.GetFullPath(output ?? Path.Combine(ToolDir(), "benchmark-output")),
-            Models = models?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            Models = models?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+            GroundTruthPath = groundTruth is null ? null : Path.GetFullPath(groundTruth)
         };
     }
 
     private static void PrintUsage()
     {
         Console.WriteLine("""
-            Usage: dotnet run --project apps/api/tools/DocumentOCR.OcrBenchmark -- [--input <folder>] [--output <folder>] [--models <ids>]
+            Usage: dotnet run --project apps/api/tools/DocumentOCR.OcrBenchmark -- [--input <folder>] [--output <folder>] [--models <ids>] [--ground-truth <file>]
 
-              --input, -i   Folder containing sample .pdf/.jpg/.jpeg/.png documents.
-                            Default: apps/api/tools/DocumentOCR.OcrBenchmark/data
-              --output, -o  Folder to write benchmark results into.
-                            Default: apps/api/tools/DocumentOCR.OcrBenchmark/benchmark-output
-              --models, -m  Comma-separated Azure model IDs to run, e.g. "prebuilt-invoice,prebuilt-layout".
-                            Default: AzureDocumentIntelligence:BenchmarkModelIds from config, or just
-                            DefaultModelId if that list is empty.
+              --input, -i         Folder containing sample .pdf/.jpg/.jpeg/.png documents.
+                                  Default: apps/api/tools/DocumentOCR.OcrBenchmark/data
+              --output, -o        Folder to write benchmark results into.
+                                  Default: apps/api/tools/DocumentOCR.OcrBenchmark/benchmark-output
+              --ground-truth, -g  Path to a ground-truth CSV (FileName + Expected* columns) to compare
+                                  extracted fields against. Default: ground-truth.csv inside --input;
+                                  comparison columns are left blank when no ground truth is found.
+              --models, -m        Comma-separated Azure model IDs to run, e.g. "prebuilt-invoice,prebuilt-layout".
+                                  Default: AzureDocumentIntelligence:BenchmarkModelIds from config, or just
+                                  DefaultModelId if that list is empty.
 
             Both folder defaults are anchored to this tool's own project folder (not the current
             working directory), matching the .gitignore entries that keep sample data and

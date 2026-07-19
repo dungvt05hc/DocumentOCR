@@ -33,7 +33,8 @@ internal sealed class BenchmarkFileProcessor(
         string fileName,
         string contentType,
         string outputDir,
-        CancellationToken ct)
+        CancellationToken ct,
+        GroundTruthRow? groundTruth = null)
     {
         Directory.CreateDirectory(outputDir);
 
@@ -63,9 +64,15 @@ internal sealed class BenchmarkFileProcessor(
                 fileName, DocumentCategory: null, provider.ProviderName, ModelId: null, Features: "",
                 ProcessingDurationMs: 0, PageCount: 0, FullTextLength: 0, LineCount: 0, WordCount: 0,
                 ParagraphCount: 0, TableCount: 0, KeyValuePairCount: 0, AverageConfidence: null,
-                ExtractedSupplierName: null, ExtractedSupplierTaxCode: null, ExtractedInvoiceNumber: null,
-                ExtractedInvoiceDate: null, ExtractedSubtotalAmount: null, ExtractedVatAmount: null,
-                ExtractedTotalAmount: null, ExtractedCurrency: null, WarningCount: 0,
+                ExtractedSupplierName: null, ExpectedSupplierName: groundTruth?.ExpectedSupplierName, SupplierNameMatched: null,
+                ExtractedSupplierTaxCode: null, ExpectedSupplierTaxCode: groundTruth?.ExpectedSupplierTaxCode, TaxCodeMatched: null,
+                ExtractedInvoiceNumber: null, ExpectedInvoiceNumber: groundTruth?.ExpectedInvoiceNumber, InvoiceNumberMatched: null,
+                ExtractedInvoiceDate: null, ExpectedInvoiceDate: groundTruth?.ExpectedInvoiceDate, InvoiceDateMatched: null,
+                ExtractedSubtotalAmount: null, ExpectedSubtotalAmount: groundTruth?.ExpectedSubtotalAmount, SubtotalMatched: null,
+                ExtractedVatAmount: null, ExpectedVatAmount: groundTruth?.ExpectedVatAmount, VatMatched: null,
+                ExtractedTotalAmount: null, ExpectedTotalAmount: groundTruth?.ExpectedTotalAmount, TotalMatched: null,
+                ExtractedCurrency: null, ExpectedCurrency: groundTruth?.ExpectedCurrency, CurrencyMatched: null,
+                FieldAccuracyPercent: null, WarningCount: 0,
                 RawProviderResponsePath: null, NormalizedOcrResultPath: null, ErrorMessage: ex.Message);
         }
 
@@ -85,6 +92,24 @@ internal sealed class BenchmarkFileProcessor(
             Path.Combine(outputDir, "validation-warnings.json"),
             JsonSerializer.Serialize(warnings, JsonOptions), ct);
 
+        var extractedSupplierName = FieldValue(fields, FieldName.SupplierName);
+        var extractedSupplierTaxCode = FieldValue(fields, FieldName.SupplierTaxCode);
+        var extractedInvoiceNumber = FieldValue(fields, FieldName.InvoiceNumber);
+        var extractedInvoiceDate = FieldValue(fields, FieldName.InvoiceDate);
+        var extractedSubtotalAmount = FieldValue(fields, FieldName.SubtotalAmount);
+        var extractedVatAmount = FieldValue(fields, FieldName.VatAmount);
+        var extractedTotalAmount = FieldValue(fields, FieldName.TotalAmount);
+        var extractedCurrency = FieldValue(fields, FieldName.Currency);
+
+        var supplierNameMatched = GroundTruthComparer.MatchText(groundTruth?.ExpectedSupplierName, extractedSupplierName);
+        var taxCodeMatched = GroundTruthComparer.MatchTaxCode(groundTruth?.ExpectedSupplierTaxCode, extractedSupplierTaxCode);
+        var invoiceNumberMatched = GroundTruthComparer.MatchText(groundTruth?.ExpectedInvoiceNumber, extractedInvoiceNumber);
+        var invoiceDateMatched = GroundTruthComparer.MatchDate(groundTruth?.ExpectedInvoiceDate, extractedInvoiceDate);
+        var subtotalMatched = GroundTruthComparer.MatchMoney(groundTruth?.ExpectedSubtotalAmount, extractedSubtotalAmount);
+        var vatMatched = GroundTruthComparer.MatchMoney(groundTruth?.ExpectedVatAmount, extractedVatAmount);
+        var totalMatched = GroundTruthComparer.MatchMoney(groundTruth?.ExpectedTotalAmount, extractedTotalAmount);
+        var currencyMatched = GroundTruthComparer.MatchCurrency(groundTruth?.ExpectedCurrency, extractedCurrency);
+
         return new BenchmarkCsvRow(
             FileName: fileName,
             DocumentCategory: FieldValue(fields, FieldName.DocumentType),
@@ -100,14 +125,33 @@ internal sealed class BenchmarkFileProcessor(
             TableCount: ocrResult.Tables.Count,
             KeyValuePairCount: ocrResult.KeyValuePairs.Count,
             AverageConfidence: AverageFieldConfidence(fields),
-            ExtractedSupplierName: FieldValue(fields, FieldName.SupplierName),
-            ExtractedSupplierTaxCode: FieldValue(fields, FieldName.SupplierTaxCode),
-            ExtractedInvoiceNumber: FieldValue(fields, FieldName.InvoiceNumber),
-            ExtractedInvoiceDate: FieldValue(fields, FieldName.InvoiceDate),
-            ExtractedSubtotalAmount: FieldValue(fields, FieldName.SubtotalAmount),
-            ExtractedVatAmount: FieldValue(fields, FieldName.VatAmount),
-            ExtractedTotalAmount: FieldValue(fields, FieldName.TotalAmount),
-            ExtractedCurrency: FieldValue(fields, FieldName.Currency),
+            ExtractedSupplierName: extractedSupplierName,
+            ExpectedSupplierName: groundTruth?.ExpectedSupplierName,
+            SupplierNameMatched: supplierNameMatched,
+            ExtractedSupplierTaxCode: extractedSupplierTaxCode,
+            ExpectedSupplierTaxCode: groundTruth?.ExpectedSupplierTaxCode,
+            TaxCodeMatched: taxCodeMatched,
+            ExtractedInvoiceNumber: extractedInvoiceNumber,
+            ExpectedInvoiceNumber: groundTruth?.ExpectedInvoiceNumber,
+            InvoiceNumberMatched: invoiceNumberMatched,
+            ExtractedInvoiceDate: extractedInvoiceDate,
+            ExpectedInvoiceDate: groundTruth?.ExpectedInvoiceDate,
+            InvoiceDateMatched: invoiceDateMatched,
+            ExtractedSubtotalAmount: extractedSubtotalAmount,
+            ExpectedSubtotalAmount: groundTruth?.ExpectedSubtotalAmount,
+            SubtotalMatched: subtotalMatched,
+            ExtractedVatAmount: extractedVatAmount,
+            ExpectedVatAmount: groundTruth?.ExpectedVatAmount,
+            VatMatched: vatMatched,
+            ExtractedTotalAmount: extractedTotalAmount,
+            ExpectedTotalAmount: groundTruth?.ExpectedTotalAmount,
+            TotalMatched: totalMatched,
+            ExtractedCurrency: extractedCurrency,
+            ExpectedCurrency: groundTruth?.ExpectedCurrency,
+            CurrencyMatched: currencyMatched,
+            FieldAccuracyPercent: GroundTruthComparer.CalculateFieldAccuracyPercent(
+                supplierNameMatched, taxCodeMatched, invoiceNumberMatched, invoiceDateMatched,
+                subtotalMatched, vatMatched, totalMatched, currencyMatched),
             WarningCount: warnings.Count,
             RawProviderResponsePath: rawResponsePath,
             NormalizedOcrResultPath: ocrResultPath,

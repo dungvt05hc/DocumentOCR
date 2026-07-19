@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using ClosedXML.Excel;
 using DocumentOCR.Application.DTOs;
 using DocumentOCR.Domain.Enums;
@@ -19,6 +21,16 @@ namespace DocumentOCR.IntegrationTests;
 public class DocumentLifecycleTests : IClassFixture<CustomWebApplicationFactory>
 {
     private readonly CustomWebApplicationFactory _factory;
+
+    // Mirrors the server: ASP.NET Core's MVC JSON formatter defaults to Web conventions
+    // (camelCase, case-insensitive matching) and Program.cs adds JsonStringEnumConverter so
+    // enums serialize as strings. HttpContent.ReadFromJsonAsync/GetFromJsonAsync without an
+    // explicit options argument already assumes JsonSerializerDefaults.Web, but doesn't know
+    // about the enum converter, so "Uploaded" fails to parse into DocumentStatus without this.
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new JsonStringEnumConverter() }
+    };
 
     public DocumentLifecycleTests(CustomWebApplicationFactory factory)
     {
@@ -40,7 +52,7 @@ public class DocumentLifecycleTests : IClassFixture<CustomWebApplicationFactory>
         var uploadResponse = await client.PostAsync("/api/documents/upload", uploadContent);
 
         Assert.Equal(HttpStatusCode.Accepted, uploadResponse.StatusCode);
-        var uploadResults = await uploadResponse.Content.ReadFromJsonAsync<List<UploadFileResult>>();
+        var uploadResults = await uploadResponse.Content.ReadFromJsonAsync<List<UploadFileResult>>(JsonOptions);
         var uploadResult = Assert.Single(uploadResults!);
         Assert.True(uploadResult.Success, uploadResult.Error);
         Assert.NotNull(uploadResult.Document);
@@ -53,7 +65,7 @@ public class DocumentLifecycleTests : IClassFixture<CustomWebApplicationFactory>
         Assert.Contains(documentId, jobClient.EnqueuedDocumentIds);
 
         // ── 2. Get — freshly uploaded, not yet processed ────────────────────────
-        var afterUpload = await client.GetFromJsonAsync<DocumentDetailDto>($"/api/documents/{documentId}");
+        var afterUpload = await client.GetFromJsonAsync<DocumentDetailDto>($"/api/documents/{documentId}", JsonOptions);
         Assert.NotNull(afterUpload);
         Assert.Equal(DocumentStatus.Uploaded, afterUpload!.Status);
         Assert.Empty(afterUpload.Fields);
@@ -69,11 +81,16 @@ public class DocumentLifecycleTests : IClassFixture<CustomWebApplicationFactory>
         }
 
         // ── 4. Fields returned ───────────────────────────────────────────────────
-        var afterProcessing = await client.GetFromJsonAsync<DocumentDetailDto>($"/api/documents/{documentId}");
+        var afterProcessing = await client.GetFromJsonAsync<DocumentDetailDto>($"/api/documents/{documentId}", JsonOptions);
         Assert.NotNull(afterProcessing);
         Assert.Equal(DocumentStatus.Processed, afterProcessing!.Status);
         Assert.Equal(1, afterProcessing.PageCount);
-        Assert.Empty(afterProcessing.Warnings);
+        // FakeOcrProvider has no explicit currency field, so the Vietnamese-grouped-money
+        // fallback heuristic (FieldExtractionService.AddDefaultCurrencyCandidate) infers VND at
+        // a deliberately low 0.5 confidence — that's expected to surface as an Info-level
+        // LOW_CONFIDENCE warning, not a defect. Data-quality warnings (Warning/High/Error) must
+        // still be absent for this clean sample document.
+        Assert.DoesNotContain(afterProcessing.Warnings, w => w.Severity != ValidationSeverity.Info);
         Assert.NotNull(afterProcessing.OcrLog);
         Assert.Equal("Fake", afterProcessing.OcrLog!.ProviderName);
 
@@ -90,7 +107,7 @@ public class DocumentLifecycleTests : IClassFixture<CustomWebApplicationFactory>
         var updateResponse = await client.PutAsJsonAsync($"/api/documents/{documentId}/fields", updateRequest);
         Assert.Equal(HttpStatusCode.NoContent, updateResponse.StatusCode);
 
-        var afterReview = await client.GetFromJsonAsync<DocumentDetailDto>($"/api/documents/{documentId}");
+        var afterReview = await client.GetFromJsonAsync<DocumentDetailDto>($"/api/documents/{documentId}", JsonOptions);
         Assert.NotNull(afterReview);
         Assert.Equal(DocumentStatus.Reviewed, afterReview!.Status);
         var supplierName = Assert.Single(afterReview.Fields, f => f.FieldName == nameof(FieldName.SupplierName));

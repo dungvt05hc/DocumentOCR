@@ -59,14 +59,27 @@ public class CustomWebApplicationFactory : WebApplicationFactory<Program>
             services.AddSingleton<IBackgroundJobClient, RecordingBackgroundJobClient>();
 
             // The real Hangfire server hosted service polls Postgres for jobs; without a
-            // reachable database it would fail host startup, so it's removed entirely.
-            // The RecordingBackgroundJobClient above means nothing is ever enqueued into it.
-            var hangfireServer = services.FirstOrDefault(d =>
-                d.ServiceType == typeof(IHostedService)
-                && d.ImplementationType?.FullName == "Hangfire.BackgroundJobServerHostedService");
-            if (hangfireServer is not null)
-                services.Remove(hangfireServer);
+            // reachable database it would hang trying to connect and time out host shutdown,
+            // so it's removed entirely. The RecordingBackgroundJobClient above means nothing is
+            // ever enqueued into it. AddHangfireServer() registers its IHostedService via a
+            // provider factory (no ImplementationType), so it can't be matched by type — instead
+            // match any IHostedService whose implementation originates from a Hangfire assembly.
+            var hangfireHostedServices = services
+                .Where(d => d.ServiceType == typeof(IHostedService))
+                .Where(IsFromHangfireAssembly)
+                .ToList();
+            foreach (var descriptor in hangfireHostedServices)
+                services.Remove(descriptor);
         });
+    }
+
+    private static bool IsFromHangfireAssembly(ServiceDescriptor descriptor)
+    {
+        var declaringAssembly = descriptor.ImplementationType?.Assembly
+            ?? descriptor.ImplementationInstance?.GetType().Assembly
+            ?? descriptor.ImplementationFactory?.Method.DeclaringType?.Assembly;
+
+        return declaringAssembly?.GetName().Name?.StartsWith("Hangfire", StringComparison.Ordinal) == true;
     }
 
     protected override IHost CreateHost(IHostBuilder builder)
