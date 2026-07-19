@@ -6,10 +6,10 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-// ── Dev-only tool: compares FakeOcrProvider and AzureDocumentIntelligenceProvider on the same
-// sample documents. Never referenced by the shipped API/WebApi project. See
-// LOCAL_DEVELOPMENT.md > "OCR Benchmark Tool" for usage and cost caution before pointing this
-// at a real Azure resource. ──────────────────────────────────────────────────────────────────
+// ── Dev-only tool: compares FakeOcrProvider, AzureDocumentIntelligenceProvider, and the
+// optional free/open-source PaddleOcrProvider on the same sample documents. Never referenced by
+// the shipped API/WebApi project. See LOCAL_DEVELOPMENT.md > "OCR Benchmark Tool" for usage and
+// cost caution before pointing this at a real Azure resource. ─────────────────────────────────
 
 var options = CliOptions.Parse(args);
 if (options is null)
@@ -31,6 +31,8 @@ var configuration = new ConfigurationBuilder()
 
 var azureOptions = configuration.GetSection(AzureOcrOptions.SectionName).Get<AzureOcrOptions>()
     ?? new AzureOcrOptions();
+var paddleOptions = configuration.GetSection(PaddleOcrOptions.SectionName).Get<PaddleOcrOptions>()
+    ?? new PaddleOcrOptions();
 
 using var loggerFactory = LoggerFactory.Create(builder => builder
     .AddSimpleConsole(c => c.SingleLine = true)
@@ -63,12 +65,24 @@ targets.AddRange(azureModelIds.Distinct(StringComparer.OrdinalIgnoreCase).Select
     return ((IDocumentOcrProvider)provider, $"AzureDocumentIntelligence-{modelId}");
 }));
 
+var paddleProvider = new PaddleOcrProvider(
+    Options.Create(paddleOptions), loggerFactory.CreateLogger<PaddleOcrProvider>());
+targets.Add((paddleProvider, "Paddle"));
+
 if (!azureOptions.IsConfigured)
 {
     Console.WriteLine(
         "Note: AzureDocumentIntelligence:Endpoint/ApiKey are not configured (user-secrets or " +
         "AzureDocumentIntelligence__Endpoint / __ApiKey env vars). Azure rows in the summary " +
         "will record a failure — see LOCAL_DEVELOPMENT.md to set credentials.");
+}
+
+if (!paddleOptions.IsConfigured)
+{
+    Console.WriteLine(
+        "Note: PaddleOcr:BaseUrl is not configured (user-secrets or PaddleOcr__BaseUrl env var). " +
+        "Paddle rows in the summary will record a failure — see LOCAL_DEVELOPMENT.md to run the " +
+        "PaddleOCR service locally.");
 }
 
 Console.WriteLine(

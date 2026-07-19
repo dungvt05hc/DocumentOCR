@@ -81,12 +81,14 @@ skipped rather than failing the request.
 
 ### Choosing a provider: `Ocr:Provider`
 
-Which `IDocumentOcrProvider` gets registered is controlled by configuration, not code:
+Which `IDocumentOcrProvider` gets registered is controlled by configuration, not code — see
+`OcrProviderRegistry` in `apps/api/DocumentOCR.Infrastructure/Ocr/`:
 
 ```json
 "Ocr": {
   "Provider": "Fake",
-  "StoreRawProviderResponse": true
+  "StoreRawProviderResponse": true,
+  "StoreNormalizedOcrResult": true
 }
 ```
 
@@ -94,10 +96,14 @@ Which `IDocumentOcrProvider` gets registered is controlled by configuration, not
 |---|---|
 | `Fake` (default) | `FakeOcrProvider` — deterministic Vietnamese invoice result, no network calls, no credentials needed. |
 | `Azure` | `AzureDocumentIntelligenceProvider` — requires `Endpoint`/`ApiKey` below. |
+| `Paddle` | `PaddleOcrProvider` — free/open-source baseline, calls a separate PaddleOCR HTTP service; requires `PaddleOcr:BaseUrl` below. |
 
-`StoreRawProviderResponse` (default `true`) controls whether `OcrResult.RawProviderResponseJson`
-gets persisted into `OcrProviderLogs.RawResponseJson` — useful for debugging field-mapping
-issues without re-calling Azure; set `false` to reduce row size once the integration is trusted.
+`StoreRawProviderResponse` (default `true`) controls whether the provider's raw response JSON
+gets persisted (both inline into `OcrProviderLogs.RawResponseJson` and, when
+`StoreNormalizedOcrResult` is also enabled, as a file via `IDocumentStorageService` — its path is
+recorded in `OcrProviderLogs.RawResponsePath`/`NormalizedResultPath`). Useful for debugging
+field-mapping issues without re-calling the provider; set both `false` to reduce storage once the
+integration is trusted.
 
 Override locally without editing `appsettings.json`:
 
@@ -155,13 +161,122 @@ Use this to verify the Azure path end-to-end before relying on it.
 
 ---
 
+## Configuring PaddleOCR (optional, free/open-source baseline)
+
+`PaddleOcrProvider` does **not** run PaddleOCR in-process — it calls a separate HTTP service that
+you run yourself (Docker or a local Python process; see "Running the PaddleOCR service" below).
+This repo does not include that service; `PaddleOcrProvider` is only the .NET-side HTTP client
+and response mapper.
+
+```json
+"PaddleOcr": {
+  "BaseUrl": "http://localhost:8866",
+  "AnalyzeEndpointPath": "/ocr/analyze",
+  "TimeoutSeconds": 60
+}
+```
+
+Set via user-secrets or environment variable, same pattern as Azure:
+```bash
+dotnet user-secrets set "PaddleOcr:BaseUrl" "http://localhost:8866"
+# or
+export PaddleOcr__BaseUrl="http://localhost:8866"
+```
+
+**Startup validation**: same fail-fast behavior as Azure — if `Ocr:Provider` is `Paddle` but
+`PaddleOcr:BaseUrl` is missing, the app refuses to start with a clear error instead of failing on
+the first upload.
+
+### Expected PaddleOCR service contract
+
+`PaddleOcrProvider` posts the uploaded file as `multipart/form-data` (field name `file`) to
+`POST {BaseUrl}{AnalyzeEndpointPath}`, and expects this JSON shape back:
+
+```json
+{
+  "success": true,
+  "errorMessage": null,
+  "pageCount": 1,
+  "fullText": "MOTA CAFE\nTổng: 85.000",
+  "averageConfidence": 0.93,
+  "pages": [
+    {
+      "pageNumber": 1,
+      "width": 800.0,
+      "height": 1200.0,
+      "unit": "pixel",
+      "lines": [
+        {
+          "text": "MOTA CAFE",
+          "confidence": 0.95,
+          "boundingBox": [[10, 20], [200, 20], [200, 50], [10, 50]],
+          "words": [
+            { "text": "MOTA", "confidence": 0.96, "boundingBox": [[10, 20], [80, 20], [80, 50], [10, 50]] },
+            { "text": "CAFE", "confidence": 0.94, "boundingBox": [[90, 20], [200, 20], [200, 50], [90, 50]] }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+Notes:
+- `words` is optional per line — PaddleOCR's default detection+recognition pipeline is
+  line-level; omit it (or send `[]`) when word-level segmentation isn't available. Field
+  extraction only reads `Lines`/`FullText`, so this has no functional impact.
+- `boundingBox` is a 4-point polygon `[[x,y], [x,y], [x,y], [x,y]]`, pixel (or PDF-point)
+  coordinates — same concept as Azure's polygon, different JSON shape.
+- On failure, either return a non-2xx HTTP status, or 200 with `"success": false` and an
+  `errorMessage` — `PaddleOcrProvider` handles both the same way (marks the `NormalizedOcrDocument`
+  as failed, never throws).
+- `PaddleOcrProvider` never populates `Tables`, `KeyValuePairs`, or `Fields` — PaddleOCR in this
+  contract is text/line detection only, no layout analysis. It's a free baseline for benchmarking
+  against Azure, not a layout-aware replacement.
+
+### Running the PaddleOCR service locally
+
+Not included in this repo — implement only if/when needed. Two common options:
+
+**Option A — Docker**, wrapping the official `paddleocr` PyPI package with a small HTTP layer
+(e.g. FastAPI) that exposes `POST /ocr/analyze` per the contract above. A minimal reference
+`Dockerfile` shape:
+```dockerfile
+FROM python:3.11-slim
+RUN pip install paddlepaddle paddleocr fastapi uvicorn python-multipart
+COPY app.py .
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8866"]
+```
+
+**Option B — local Python process** (no Docker):
+```bash
+pip install paddlepaddle paddleocr fastapi uvicorn python-multipart
+uvicorn app:app --host 0.0.0.0 --port 8866
+```
+
+In both cases, `app.py` needs to: accept the uploaded file, run it through
+`paddleocr.PaddleOCR(lang="vi")` (or your chosen language model), and shape the result into the
+JSON contract above before responding. `PaddleOcrProvider` only depends on that HTTP contract —
+it doesn't care how the service is implemented internally.
+
+### Manual test: processing one file through Paddle
+
+1. Start your PaddleOCR service locally (see above) and confirm it's reachable at the configured `BaseUrl`.
+2. Set `Ocr:Provider` to `Paddle` and `PaddleOcr:BaseUrl` (Option 1 or 2 above).
+3. Start Postgres and the API, upload a sample file, and confirm it reaches `Processed` (or `Failed` with a clear `ErrorMessage` if the service isn't responding as expected).
+4. Watch the API log for `Calling OCR provider Paddle for document <id>` / `PaddleOCR analysis completed...`.
+5. Switch `Ocr:Provider` back to `Fake` when done.
+
+---
+
 ## OCR Benchmark Tool (dev-only)
 
-`apps/api/tools/DocumentOCR.OcrBenchmark` is a console app that runs `FakeOcrProvider` **and**
-`AzureDocumentIntelligenceProvider` — for one or more Azure model IDs at once — over a folder of
-sample PDF/JPG/PNG invoices in a single pass, and writes per-file/per-target debug JSON plus a
-`summary.csv` for side-by-side comparison. It is dev-only tooling — not part of the shipped
-API/WebApi project, and not wired into `DocumentOCR.WebApi` in any way.
+`apps/api/tools/DocumentOCR.OcrBenchmark` is a console app that runs `FakeOcrProvider`,
+`AzureDocumentIntelligenceProvider` (for one or more Azure model IDs at once), **and**
+`PaddleOcrProvider` over a folder of sample PDF/JPG/PNG invoices in a single pass, and writes
+per-file/per-target debug JSON plus a `summary.csv` for side-by-side comparison. It is dev-only
+tooling — not part of the shipped API/WebApi project, and not wired into `DocumentOCR.WebApi` in
+any way.
 
 ### Setup
 
@@ -174,6 +289,9 @@ API/WebApi project, and not wired into `DocumentOCR.WebApi` in any way.
    (`dotnet user-secrets` from `apps/api/DocumentOCR.WebApi`, or `AzureDocumentIntelligence__*`
    env vars). The benchmark tool shares the **same** user-secrets store as the WebApi project
    (same `UserSecretsId`), so nothing extra to configure if Azure is already set up for the API.
+3. Optionally configure `PaddleOcr:BaseUrl` the same way if you have a PaddleOCR service running
+   locally (see "Configuring PaddleOCR" above). If not configured, the Paddle row in the summary
+   simply records a failure — the run still completes for Fake/Azure.
 
 ### Run
 
@@ -195,12 +313,15 @@ dotnet run --project apps/api/tools/DocumentOCR.OcrBenchmark -- --models prebuil
 ```
 
 Results land under `apps/api/tools/DocumentOCR.OcrBenchmark/benchmark-output/<UTC-timestamp>/`,
-one subfolder per input file, each containing a `Fake/` subfolder plus one
+one subfolder per input file, each containing a `Fake/` subfolder, a `Paddle/` subfolder, and one
 `AzureDocumentIntelligence-<modelId>/` subfolder per model run — each with `raw-response.json`,
-`ocr-result.json`, `extracted-fields.json`, `validation-warnings.json` — plus a `summary.csv` at
-the run root with one row per (file, target): `FileName, ProviderName, ModelId,
-ProcessingDurationMs, PageCount, FullTextLength, AverageConfidence, SupplierTaxCode, InvoiceDate,
-TotalAmount, WarningCount, ErrorMessage`.
+`ocr-result.json` (the full `NormalizedOcrDocument`), `extracted-fields.json`,
+`validation-warnings.json` — plus a `summary.csv` at the run root with one row per (file,
+target): `FileName, DocumentCategory, ProviderName, ModelId, Features, ProcessingDurationMs,
+PageCount, FullTextLength, LineCount, WordCount, ParagraphCount, TableCount, KeyValuePairCount,
+AverageConfidence, ExtractedSupplierName, ExtractedSupplierTaxCode, ExtractedInvoiceNumber,
+ExtractedInvoiceDate, ExtractedSubtotalAmount, ExtractedVatAmount, ExtractedTotalAmount,
+ExtractedCurrency, WarningCount, RawProviderResponsePath, NormalizedOcrResultPath, ErrorMessage`.
 
 ⚠️ **Cost caution**: this runs Azure Document Intelligence against *every* file in `--input`,
 once per model, not a single manual test call — a folder of 20 invoices against all 4 default

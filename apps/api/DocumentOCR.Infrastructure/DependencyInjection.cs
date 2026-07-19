@@ -37,9 +37,10 @@ public static class DependencyInjection
         // ── OCR provider ─────────────────────────────────────────────────────────
         services.Configure<OcrOptions>(configuration.GetSection(OcrOptions.SectionName));
 
-        // Selected via "Ocr:Provider" config ("Fake" | "Azure"); defaults to Fake so
-        // local/test environments never accidentally call Azure without opting in.
+        // Selected via "Ocr:Provider" config ("Fake" | "Azure" | "Paddle"); defaults to Fake so
+        // local/test environments never accidentally call a real provider without opting in.
         var isAzureProvider = OcrProviderRegistry.IsAzureProvider(configuration);
+        var isPaddleProvider = OcrProviderRegistry.IsPaddleProvider(configuration);
 
         // Fails fast at host startup (not on the first document processed) when Ocr:Provider is
         // "Azure" but Endpoint/ApiKey are missing — a misconfigured deployment should never
@@ -51,6 +52,15 @@ public static class DependencyInjection
                 "AzureDocumentIntelligence:Endpoint and ApiKey must be set (via dotnet user-secrets " +
                 "or AzureDocumentIntelligence__Endpoint / __ApiKey environment variables) when " +
                 "Ocr:Provider is \"Azure\". See LOCAL_DEVELOPMENT.md.")
+            .ValidateOnStart();
+
+        // Same fail-fast treatment when Ocr:Provider is "Paddle" but no BaseUrl was configured.
+        services.AddOptions<PaddleOcrOptions>()
+            .Bind(configuration.GetSection(PaddleOcrOptions.SectionName))
+            .Validate(
+                o => !isPaddleProvider || o.IsConfigured,
+                "PaddleOcr:BaseUrl must be set (via dotnet user-secrets or PaddleOcr__BaseUrl " +
+                "environment variable) when Ocr:Provider is \"Paddle\". See LOCAL_DEVELOPMENT.md.")
             .ValidateOnStart();
 
         OcrProviderRegistry.Register(services, configuration);
