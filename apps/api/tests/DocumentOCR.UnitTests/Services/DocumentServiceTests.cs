@@ -5,6 +5,7 @@ using DocumentOCR.Domain.Entities;
 using DocumentOCR.Domain.Enums;
 using DocumentOCR.Infrastructure.Persistence;
 using DocumentOCR.Infrastructure.Processing;
+using DocumentOCR.Infrastructure.Profiles;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
 
@@ -87,14 +88,33 @@ public class DocumentServiceTests
     }
 
     [Fact]
-    public async Task UpdateFieldsAsync_UnrecognizedFieldName_ThrowsArgumentExceptionWithoutPersistingField()
+    public async Task UpdateFieldsAsync_NewProfileOnlyFieldKey_CreatesAndPersistsField()
+    {
+        // "BuyerName" is a dynamic review-profile field key (see IDocumentProfileCatalog) with
+        // no extractor yet — the user must still be able to fill it in manually and save it.
+        await using var db = CreateDbContext();
+        var document = await SeedDocumentAsync(db, _ => { });
+        var sut = CreateSut(db);
+        var request = new UpdateFieldsRequest
+        {
+            Fields = [new FieldUpdateItem { FieldName = "BuyerName", NormalizedValue = "Acme Corp" }]
+        };
+
+        await sut.UpdateFieldsAsync(document.Id, OrganizationId, request);
+
+        var reloaded = await db.Documents.Include(d => d.Fields).SingleAsync(d => d.Id == document.Id);
+        Assert.Contains(reloaded.Fields, f => f.FieldName == "BuyerName" && f.NormalizedValue == "Acme Corp" && f.IsEditedByUser);
+    }
+
+    [Fact]
+    public async Task UpdateFieldsAsync_EmptyFieldName_ThrowsArgumentExceptionWithoutPersistingField()
     {
         await using var db = CreateDbContext();
         var document = await SeedDocumentAsync(db, _ => { });
         var sut = CreateSut(db);
         var request = new UpdateFieldsRequest
         {
-            Fields = [new FieldUpdateItem { FieldName = "NotARealField", NormalizedValue = "x" }]
+            Fields = [new FieldUpdateItem { FieldName = "", NormalizedValue = "x" }]
         };
 
         await Assert.ThrowsAsync<ArgumentException>(() =>
@@ -173,6 +193,38 @@ public class DocumentServiceTests
     }
 
     [Fact]
+    public async Task GetReviewByIdAsync_ExistingDocument_ReturnsDynamicReviewResponse()
+    {
+        await using var db = CreateDbContext();
+        var document = await SeedDocumentAsync(db, doc =>
+        {
+            doc.DocumentType = DocumentType.VatInvoice;
+            doc.Fields.Add(Field(doc.Id, FieldName.DocumentType, nameof(DocumentType.VatInvoice)));
+            doc.Fields.Add(Field(doc.Id, FieldName.SupplierName, "CONG TY ABC"));
+        });
+        var sut = CreateSut(db);
+
+        var result = await sut.GetReviewByIdAsync(document.Id, OrganizationId);
+
+        Assert.NotNull(result);
+        Assert.Equal(DocumentCategory.VatInvoice, result!.DocumentCategory);
+        Assert.Contains(result.Sections, s => s.SectionKey == "seller");
+    }
+
+    [Fact]
+    public async Task GetReviewByIdAsync_DocumentBelongsToAnotherOrganization_ReturnsNull()
+    {
+        await using var db = CreateDbContext();
+        var otherOrganizationId = Guid.NewGuid();
+        var document = await SeedDocumentAsync(db, _ => { }, organizationId: otherOrganizationId);
+        var sut = CreateSut(db);
+
+        var result = await sut.GetReviewByIdAsync(document.Id, OrganizationId);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
     public async Task MarkUploadedForProcessingAsync_PreviouslyFailedDocument_ResetsErrorAndTimestamps()
     {
         await using var db = CreateDbContext();
@@ -242,7 +294,7 @@ public class DocumentServiceTests
         CreateSut(db, new NoOpDocumentStorageService());
 
     private static DocumentService CreateSut(ApplicationDbContext db, IDocumentStorageService storage) =>
-        new(db, storage, new FieldValidationService());
+        new(db, storage, new FieldValidationService(new DocumentProfileCatalog()), new DocumentReviewMappingService(new DocumentProfileCatalog()));
 
     private static ApplicationDbContext CreateDbContext()
     {

@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.RegularExpressions;
 using DocumentOCR.Application.Interfaces;
+using DocumentOCR.Application.Models;
 using DocumentOCR.Domain.Entities;
 using DocumentOCR.Domain.Enums;
 
@@ -12,24 +13,12 @@ public partial class FieldValidationService : IFieldValidationService
     private const decimal AbsoluteRoundingTolerance = 1m;
     private const decimal RelativeRoundingTolerancePercent = 0.005m;
 
-    private static readonly string[] BaseRequiredFields =
-    [
-        nameof(FieldName.SupplierName),
-        nameof(FieldName.InvoiceNumber),
-        nameof(FieldName.TotalAmount)
-    ];
+    private readonly IDocumentProfileCatalog _profileCatalog;
 
-    /// <summary>
-    /// Document categories where a Vietnamese tax code is not expected on the document itself
-    /// (POS/sales receipts and restaurant bills commonly omit it). All other categories —
-    /// including the generic <see cref="DocumentType.Invoice"/> fallback — require it.
-    /// </summary>
-    private static readonly HashSet<DocumentType> TaxCodeOptionalCategories =
-    [
-        DocumentType.Receipt,
-        DocumentType.PosReceipt,
-        DocumentType.RestaurantBill
-    ];
+    public FieldValidationService(IDocumentProfileCatalog profileCatalog)
+    {
+        _profileCatalog = profileCatalog;
+    }
 
     public IReadOnlyList<ValidationWarning> Validate(Guid documentId, IEnumerable<ExtractedField> fields)
     {
@@ -39,10 +28,11 @@ public partial class FieldValidationService : IFieldValidationService
             .ToDictionary(g => g.Key, g => g.First());
 
         var warnings = new List<ValidationWarning>();
-        var documentType = GetDocumentType(fieldsByName);
+        var category = GetDocumentCategory(fieldsByName);
+        var profile = _profileCatalog.GetProfile(category);
 
-        ValidateRequiredFields(documentId, fieldsByName, documentType, warnings);
-        ValidateTaxCode(documentId, fieldsByName, documentType, warnings);
+        ValidateRequiredFields(documentId, fieldsByName, profile, warnings);
+        ValidateTaxCode(documentId, fieldsByName, warnings);
         ValidateInvoiceDate(documentId, fieldsByName, warnings);
         ValidateTotalAmount(documentId, fieldsByName, warnings);
         ValidateAmountConsistency(documentId, fieldsByName, warnings);
@@ -51,58 +41,55 @@ public partial class FieldValidationService : IFieldValidationService
         return warnings;
     }
 
+    /// <summary>
+    /// Resolves the review-facing category from the same "DocumentType" pseudo-field the legacy
+    /// pipeline already produces (defaulting to <see cref="DocumentType.Invoice"/> when absent or
+    /// unparseable — matching <c>DocumentProcessingService</c>'s existing default exactly), then
+    /// delegates to the catalog for the richer 8-value resolution.
+    /// </summary>
+    private DocumentCategory GetDocumentCategory(IReadOnlyDictionary<string, ExtractedField> fields)
+    {
+        var rawValue = fields.TryGetValue(nameof(FieldName.DocumentType), out var documentTypeField)
+            ? FieldValue(documentTypeField)
+            : null;
+
+        var fallbackDocumentType = Enum.TryParse<DocumentType>(rawValue, ignoreCase: true, out var parsed)
+            ? parsed
+            : DocumentType.Invoice;
+
+        return _profileCatalog.ResolveCategory(rawValue, fallbackDocumentType);
+    }
+
     private static void ValidateRequiredFields(
         Guid documentId,
         IReadOnlyDictionary<string, ExtractedField> fields,
-        DocumentType documentType,
+        DocumentProfile profile,
         List<ValidationWarning> warnings)
     {
-        foreach (var required in BaseRequiredFields)
+        foreach (var field in profile.Sections.SelectMany(s => s.Fields).Where(f => f.IsRequired))
         {
-            if (HasValue(fields, required)) continue;
-            AddWarning(
-                warnings,
-                documentId,
-                required,
-                "REQUIRED_FIELD_MISSING",
-                ValidationSeverity.High,
-                $"Required field '{required}' is missing or empty.");
-        }
+            if (HasValue(fields, field.FieldKey)) continue;
+            if (field.AliasFieldNames.Any(alias => HasValue(fields, alias))) continue;
 
-        if (!TaxCodeOptionalCategories.Contains(documentType) && !HasValue(fields, nameof(FieldName.SupplierTaxCode)))
-        {
-            AddWarning(
-                warnings,
-                documentId,
-                nameof(FieldName.SupplierTaxCode),
-                "REQUIRED_FIELD_MISSING",
-                ValidationSeverity.High,
-                "SupplierTaxCode is required for invoices.");
-        }
-
-        // InvoiceDate is expected everywhere, but receipts (POS/sales/restaurant) frequently
-        // print it in a shorthand or omit it — that's a lower-severity concern there than on a
-        // formal VAT invoice, where a missing date is a High-severity data-quality problem.
-        if (!HasValue(fields, nameof(FieldName.InvoiceDate)))
-        {
-            var severity = TaxCodeOptionalCategories.Contains(documentType)
-                ? ValidationSeverity.Warning
-                : ValidationSeverity.High;
+            // Key the warning by the legacy alias when one exists (e.g. "SupplierTaxCode" rather
+            // than the profile's "SellerTaxCode") so it lines up with the literal ExtractedField
+            // name a client would look for — falls back to the profile's own key for fields with
+            // no legacy equivalent (e.g. "BuyerName").
+            var warningKey = field.AliasFieldNames.Count > 0 ? field.AliasFieldNames[0] : field.FieldKey;
 
             AddWarning(
                 warnings,
                 documentId,
-                nameof(FieldName.InvoiceDate),
+                warningKey,
                 "REQUIRED_FIELD_MISSING",
-                severity,
-                $"Required field '{nameof(FieldName.InvoiceDate)}' is missing or empty.");
+                field.MissingSeverity,
+                $"Required field '{warningKey}' is missing or empty.");
         }
     }
 
     private static void ValidateTaxCode(
         Guid documentId,
         IReadOnlyDictionary<string, ExtractedField> fields,
-        DocumentType documentType,
         List<ValidationWarning> warnings)
     {
         if (!fields.TryGetValue(nameof(FieldName.SupplierTaxCode), out var taxCode)
@@ -252,16 +239,6 @@ public partial class FieldValidationService : IFieldValidationService
         return !string.IsNullOrWhiteSpace(field.NormalizedValue)
             ? field.NormalizedValue
             : field.RawValue;
-    }
-
-    private static DocumentType GetDocumentType(IReadOnlyDictionary<string, ExtractedField> fields)
-    {
-        if (!fields.TryGetValue(nameof(FieldName.DocumentType), out var documentTypeField)) return DocumentType.Invoice;
-
-        var value = FieldValue(documentTypeField);
-        return Enum.TryParse<DocumentType>(value, ignoreCase: true, out var documentType)
-            ? documentType
-            : DocumentType.Invoice;
     }
 
     private static bool TryParseDate(string value, out DateOnly date)

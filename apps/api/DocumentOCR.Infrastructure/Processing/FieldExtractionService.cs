@@ -644,9 +644,20 @@ public partial class FieldExtractionService : IFieldExtractionService
         var originalText = GetFullText(ocrResult);
 
         // Most-specific category first: a restaurant/POS bill also matches the generic
-        // Receipt/Invoice patterns below, so it must be checked before them.
+        // Receipt/Invoice patterns below, so it must be checked before them. This value feeds
+        // both the legacy DocumentType enum (via Enum.TryParse in DocumentProcessingService,
+        // which simply ignores values it doesn't recognize) and the richer DocumentCategory
+        // enum used by the dynamic review profile system (IDocumentProfileCatalog.ResolveCategory
+        // tries DocumentCategory first) — so this string can be a value from either enum.
         string? documentType = null;
-        if (RestaurantMarkerPattern().IsMatch(originalText))
+        if (AppReceiptMarkerPattern().IsMatch(originalText) || searchText.Contains("ma don hang", StringComparison.Ordinal))
+        {
+            // Screenshots of delivery/order-app receipts (Grab, ShopeeFood, Baemin, ...) use
+            // very particular vocabulary that would otherwise fall through to the generic
+            // Receipt/Invoice buckets below.
+            documentType = nameof(DocumentCategory.AppReceiptScreenshot);
+        }
+        else if (RestaurantMarkerPattern().IsMatch(originalText))
         {
             documentType = nameof(DocumentType.RestaurantBill);
         }
@@ -669,6 +680,17 @@ public partial class FieldExtractionService : IFieldExtractionService
             // "Hóa đơn giá trị gia tăng" is the formal Vietnamese VAT invoice title —
             // SupplierTaxCode is required for it.
             documentType = nameof(DocumentType.VatInvoice);
+        }
+        else if (CommercialInvoiceMarkerPattern().IsMatch(originalText))
+        {
+            documentType = nameof(DocumentCategory.CommercialInvoice);
+        }
+        else if (InternationalInvoiceMarkerPattern().IsMatch(originalText))
+        {
+            // English-language "tax invoice" / "bill to" / "purchase order" phrasing indicates
+            // an international/commercial-style invoice rather than a Vietnamese one — checked
+            // before the generic "invoice" fallback below, which would otherwise catch it first.
+            documentType = nameof(DocumentCategory.InternationalInvoice);
         }
         else if (InvoiceDocumentPattern().IsMatch(originalText)
                  || searchText.Contains("hoa don", StringComparison.Ordinal)
@@ -901,6 +923,15 @@ public partial class FieldExtractionService : IFieldExtractionService
 
     [GeneratedRegex(@"(?:NHÀ\s*HÀNG|NHA\s*HANG|QUÁN\s*ĂN|QUAN\s*AN|Restaurant)", RegexOptions.IgnoreCase)]
     private static partial Regex RestaurantMarkerPattern();
+
+    [GeneratedRegex(@"(?:Mã\s*đơn\s*hàng|Order\s*ID|ShopeeFood|GrabFood|Baemin|Now\.vn)", RegexOptions.IgnoreCase)]
+    private static partial Regex AppReceiptMarkerPattern();
+
+    [GeneratedRegex(@"Commercial\s*Invoice", RegexOptions.IgnoreCase)]
+    private static partial Regex CommercialInvoiceMarkerPattern();
+
+    [GeneratedRegex(@"(?:Tax\s*Invoice|Bill\s*To|Purchase\s*Order|PO\s*Number)", RegexOptions.IgnoreCase)]
+    private static partial Regex InternationalInvoiceMarkerPattern();
 
     [GeneratedRegex(@"(?:Mã\s*số\s*thuế|MST|Tax\s*code)\s*[:\-]?\s*([0-9][0-9\s\-.]{8,18})", RegexOptions.IgnoreCase)]
     private static partial Regex TaxCodeFallbackPattern();

@@ -1,13 +1,14 @@
 using DocumentOCR.Domain.Entities;
 using DocumentOCR.Domain.Enums;
 using DocumentOCR.Infrastructure.Processing;
+using DocumentOCR.Infrastructure.Profiles;
 using Xunit;
 
 namespace DocumentOCR.UnitTests.Validation;
 
 public class FieldValidationTests
 {
-    private readonly FieldValidationService _sut = new();
+    private readonly FieldValidationService _sut = new(new DocumentProfileCatalog());
     private static readonly Guid DocId = Guid.NewGuid();
 
     private static ExtractedField Field(string name, string? normalized, double? confidence = 0.95) =>

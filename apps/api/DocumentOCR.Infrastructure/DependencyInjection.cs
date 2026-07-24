@@ -5,6 +5,7 @@ using DocumentOCR.Infrastructure.Jobs;
 using DocumentOCR.Infrastructure.Ocr;
 using DocumentOCR.Infrastructure.Persistence;
 using DocumentOCR.Infrastructure.Processing;
+using DocumentOCR.Infrastructure.Profiles;
 using DocumentOCR.Infrastructure.Storage;
 using Hangfire;
 using Hangfire.PostgreSql;
@@ -65,6 +66,10 @@ public static class DependencyInjection
 
         OcrProviderRegistry.Register(services, configuration);
 
+        // ── Document review profiles ────────────────────────────────────────────
+        // Pure static data, no per-request state — safe (and cheap) as a singleton.
+        services.AddSingleton<IDocumentProfileCatalog, DocumentProfileCatalog>();
+
         // ── Processing pipeline ──────────────────────────────────────────────────
         services.AddScoped<IFieldExtractionService, FieldExtractionService>();
         services.AddScoped<IFieldNormalizationService, FieldNormalizationService>();
@@ -75,6 +80,7 @@ public static class DependencyInjection
         services.AddScoped<IExcelExportService, ClosedXmlExportService>();
 
         // ── Application services ─────────────────────────────────────────────────
+        services.AddScoped<DocumentReviewMappingService>();
         services.AddScoped<DocumentService>();
         services.AddScoped<ExportService>();
 

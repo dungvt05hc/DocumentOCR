@@ -181,6 +181,47 @@ public class FieldExtractionServiceTests
         AssertField(fields, FieldName.TotalAmount, "60.000");
     }
 
+    [Fact]
+    public void Extract_AppOrderReceiptScreenshot_DetectsAppReceiptScreenshotCategory()
+    {
+        var ocr = OcrFromLines(
+            "ShopeeFood",
+            "Mã đơn hàng: SPF123456",
+            "Tổng cộng: 125.000");
+
+        var fields = _sut.Extract(DocumentId, ocr);
+
+        AssertField(fields, FieldName.DocumentType, nameof(DocumentCategory.AppReceiptScreenshot));
+    }
+
+    [Fact]
+    public void Extract_EnglishCommercialInvoice_DetectsCommercialInvoiceCategory()
+    {
+        var ocr = OcrFromLines(
+            "COMMERCIAL INVOICE",
+            "Bill To: Acme Corp",
+            "Invoice Number: INV-2026-001",
+            "Total: USD 1,200.00");
+
+        var fields = _sut.Extract(DocumentId, ocr);
+
+        AssertField(fields, FieldName.DocumentType, nameof(DocumentCategory.CommercialInvoice));
+    }
+
+    [Fact]
+    public void Extract_EnglishTaxInvoiceWithPurchaseOrder_DetectsInternationalInvoiceCategory()
+    {
+        var ocr = OcrFromLines(
+            "TAX INVOICE",
+            "Purchase Order: PO-9981",
+            "Bill To: Acme Corp",
+            "Total: USD 800.00");
+
+        var fields = _sut.Extract(DocumentId, ocr);
+
+        AssertField(fields, FieldName.DocumentType, nameof(DocumentCategory.InternationalInvoice));
+    }
+
     private static NormalizedOcrDocument OcrFromLines(params string[] lines)
     {
         var ocrLines = lines

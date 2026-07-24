@@ -1,61 +1,45 @@
 import { useEffect, useMemo, useState } from 'react';
 import { downloadOriginal, updateFields } from '../services/api';
-import type { DocumentDetailDto, FieldName, FieldUpdateItem, ValidationWarningDto } from '../types';
+import type { DocumentReviewResponse, FieldUpdateItem, ReviewField } from '../types';
 
 interface Props {
-  document: DocumentDetailDto;
+  document: DocumentReviewResponse;
   onSaved: () => void;
   onBack: () => void;
 }
 
-const fields: FieldName[] = [
-  'SupplierName',
-  'SupplierTaxCode',
-  'InvoiceNumber',
-  'InvoiceDate',
-  'SubtotalAmount',
-  'VatAmount',
-  'TotalAmount',
-  'Currency',
-  'DocumentType',
-  'Notes',
-];
+function isIsoDate(value: string | null): boolean {
+  return !!value && /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
 
-const labels: Record<FieldName, string> = {
-  SupplierName: 'Supplier name',
-  SupplierTaxCode: 'Tax code',
-  InvoiceNumber: 'Invoice number',
-  InvoiceDate: 'Invoice date',
-  SubtotalAmount: 'Subtotal',
-  VatAmount: 'VAT amount',
-  TotalAmount: 'Total amount',
-  Currency: 'Currency',
-  DocumentType: 'Document type',
-  Notes: 'Notes',
-};
+function fieldInputType(field: ReviewField, value: string): 'textarea' | 'select' | 'date' | 'text' {
+  if (field.dataType === 'MultilineText') return 'textarea';
+  if ((field.dataType === 'Enum' || field.dataType === 'Currency') && field.options && field.options.length > 0) {
+    return 'select';
+  }
+  if (field.dataType === 'Date' && isIsoDate(value)) return 'date';
+  return 'text';
+}
 
 export function FieldEditor({ document: doc, onSaved, onBack }: Props) {
+  const allFields = useMemo(() => doc.sections.flatMap((section) => section.fields), [doc.sections]);
+
   const initialValues = useMemo(
-    () =>
-      Object.fromEntries(
-        fields.map((fieldName) => {
-          const field = doc.fields.find((item) => item.fieldName === fieldName);
-          return [fieldName, field?.normalizedValue ?? field?.rawValue ?? ''];
-        })
-      ) as Record<FieldName, string>,
-    [doc.fields]
+    () => Object.fromEntries(allFields.map((field) => [field.fieldKey, field.value ?? ''])),
+    [allFields]
   );
 
-  const [values, setValues] = useState<Record<FieldName, string>>(initialValues);
+  const [values, setValues] = useState<Record<string, string>>(initialValues);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showDebug, setShowDebug] = useState(false);
 
   useEffect(() => {
     let objectUrl: string | null = null;
     let cancelled = false;
 
-    downloadOriginal(doc.id)
+    downloadOriginal(doc.documentId)
       .then((response) => {
         if (cancelled) return;
         objectUrl = URL.createObjectURL(new Blob([response.data], { type: doc.contentType }));
@@ -67,13 +51,13 @@ export function FieldEditor({ document: doc, onSaved, onBack }: Props) {
       cancelled = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [doc.id, doc.contentType]);
+  }, [doc.documentId, doc.contentType]);
 
-  const warningsByField = useMemo(() => {
-    const map = new Map<FieldName, ValidationWarningDto[]>();
+  const warningsByFieldKey = useMemo(() => {
+    const map = new Map<string, typeof doc.warnings>();
     for (const warning of doc.warnings) {
-      if (!warning.fieldName) continue;
-      map.set(warning.fieldName, [...(map.get(warning.fieldName) ?? []), warning]);
+      if (!warning.fieldKey) continue;
+      map.set(warning.fieldKey, [...(map.get(warning.fieldKey) ?? []), warning]);
     }
     return map;
   }, [doc.warnings]);
@@ -83,12 +67,12 @@ export function FieldEditor({ document: doc, onSaved, onBack }: Props) {
     setError(null);
 
     try {
-      const updates: FieldUpdateItem[] = fields.map((fieldName) => ({
-        fieldName,
-        normalizedValue: values[fieldName] || null,
+      const updates: FieldUpdateItem[] = allFields.map((field) => ({
+        fieldName: field.fieldKey,
+        normalizedValue: values[field.fieldKey] || null,
       }));
 
-      await updateFields(doc.id, { fields: updates });
+      await updateFields(doc.documentId, { fields: updates });
       onSaved();
     } catch {
       setError('Failed to save field edits.');
@@ -104,9 +88,9 @@ export function FieldEditor({ document: doc, onSaved, onBack }: Props) {
           Back
         </button>
         <div>
-          <h2>{doc.originalFileName}</h2>
+          <h2>{doc.fileName}</h2>
           <p className="muted">
-            {doc.status} · {doc.documentType} · {doc.warnings.length} warning
+            {doc.status} · {doc.documentCategory} · {doc.warnings.length} warning
             {doc.warnings.length === 1 ? '' : 's'}
           </p>
         </div>
@@ -118,7 +102,7 @@ export function FieldEditor({ document: doc, onSaved, onBack }: Props) {
             doc.contentType === 'application/pdf' ? (
               <iframe title="Original document preview" src={previewUrl} />
             ) : (
-              <img src={previewUrl} alt={doc.originalFileName} />
+              <img src={previewUrl} alt={doc.fileName} />
             )
           ) : (
             <div className="preview-empty">Preview unavailable</div>
@@ -128,54 +112,118 @@ export function FieldEditor({ document: doc, onSaved, onBack }: Props) {
         <section className="fields-pane" aria-label="Extracted fields">
           {doc.warnings.length > 0 && (
             <div className="warnings">
-              {doc.warnings.map((warning) => (
-                <div key={warning.id} className={`warning ${warning.severity.toLowerCase()}`}>
+              {doc.warnings.map((warning, index) => (
+                <div key={index} className={`warning ${warning.severity.toLowerCase()}`}>
                   <strong>{warning.severity}</strong>
-                  {warning.fieldName ? ` · ${labels[warning.fieldName]}` : ''}: {warning.message}
+                  {warning.fieldKey ? ` · ${warning.fieldKey}` : ''}: {warning.message}
                 </div>
               ))}
             </div>
           )}
 
-          <div className="field-grid">
-            {fields.map((fieldName) => {
-              const field = doc.fields.find((item) => item.fieldName === fieldName);
-              const confidence = field?.confidence;
-              const fieldWarnings = warningsByField.get(fieldName) ?? [];
+          {doc.sections
+            .slice()
+            .sort((a, b) => a.displayOrder - b.displayOrder)
+            .map((section) => (
+              <div key={section.sectionKey} className="review-section">
+                <h3>{section.title}</h3>
+                {section.description && <p className="muted">{section.description}</p>}
 
-              return (
-                <label
-                  key={fieldName}
-                  className={`field-editor${fieldWarnings.length > 0 ? ' has-warning' : ''}`}
-                >
-                  <span className="field-label-row">
-                    <span>{labels[fieldName]}</span>
-                    <span className="field-meta">
-                      {confidence !== null && confidence !== undefined
-                        ? `${Math.round(confidence * 100)}%`
-                        : 'No confidence'}
-                      {field?.isEditedByUser ? ' · edited' : ''}
-                    </span>
-                  </span>
-                  <input
-                    value={values[fieldName] ?? ''}
-                    onChange={(event) =>
-                      setValues((current) => ({ ...current, [fieldName]: event.target.value }))
-                    }
-                  />
-                  {fieldWarnings.map((warning) => (
-                    <span key={warning.id} className="field-warning">
-                      {warning.message}
-                    </span>
-                  ))}
-                </label>
-              );
-            })}
-          </div>
+                <div className="field-grid">
+                  {section.fields
+                    .slice()
+                    .sort((a, b) => a.displayOrder - b.displayOrder)
+                    .map((field) => {
+                      const fieldWarnings = warningsByFieldKey.get(field.fieldKey) ?? [];
+                      const value = values[field.fieldKey] ?? '';
+                      const inputType = fieldInputType(field, value);
+                      const missingRequired = field.isMissing && field.isRequired;
+
+                      return (
+                        <label
+                          key={field.fieldKey}
+                          className={[
+                            'field-editor',
+                            fieldWarnings.length > 0 ? 'has-warning' : '',
+                            missingRequired ? 'is-missing-required' : '',
+                          ]
+                            .filter(Boolean)
+                            .join(' ')}
+                        >
+                          <span className="field-label-row">
+                            <span>
+                              {field.label}
+                              {field.isRequired ? ' *' : ''}
+                            </span>
+                            <span className="field-meta">
+                              {field.confidence !== null ? `${Math.round(field.confidence * 100)}%` : 'No confidence'}
+                              {field.isEditedByUser ? ' · edited' : ''}
+                            </span>
+                          </span>
+
+                          {inputType === 'textarea' ? (
+                            <textarea
+                              value={value}
+                              onChange={(event) =>
+                                setValues((current) => ({ ...current, [field.fieldKey]: event.target.value }))
+                              }
+                            />
+                          ) : inputType === 'select' ? (
+                            <select
+                              value={value}
+                              onChange={(event) =>
+                                setValues((current) => ({ ...current, [field.fieldKey]: event.target.value }))
+                              }
+                            >
+                              <option value="">—</option>
+                              {field.options?.map((option) => (
+                                <option key={option} value={option}>
+                                  {option}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <input
+                              type={inputType === 'date' ? 'date' : 'text'}
+                              value={value}
+                              onChange={(event) =>
+                                setValues((current) => ({ ...current, [field.fieldKey]: event.target.value }))
+                              }
+                            />
+                          )}
+
+                          {fieldWarnings.map((warning, index) => (
+                            <span key={index} className="field-warning">
+                              {warning.message}
+                            </span>
+                          ))}
+
+                          {showDebug && (field.sourceText || field.sourceType || field.extractionMethod) && (
+                            <span className="field-debug">
+                              {[field.sourceType, field.extractionMethod, field.sourcePageNumber ? `p.${field.sourcePageNumber}` : null]
+                                .filter(Boolean)
+                                .join(' · ')}
+                              {field.sourceText ? ` — "${field.sourceText}"` : ''}
+                            </span>
+                          )}
+                        </label>
+                      );
+                    })}
+                </div>
+              </div>
+            ))}
 
           {error && <p className="message error">{error}</p>}
 
           <div className="review-actions">
+            <label className="debug-toggle">
+              <input
+                type="checkbox"
+                checked={showDebug}
+                onChange={(event) => setShowDebug(event.target.checked)}
+              />
+              Show OCR source/debug info
+            </label>
             <button type="button" className="primary" onClick={handleSave} disabled={saving}>
               {saving ? 'Saving...' : 'Save fields'}
             </button>

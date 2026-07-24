@@ -77,4 +77,6 @@ Prefer readable/testable over clever. Don't add unrequested features.
 `FakeOcrProvider` or fixed sample text only — never live Azure in automated tests.
 Priority coverage: money/date/tax-code normalization, OCR digit correction, VAT total match, warning generation, `FakeOcrProvider` determinism, Excel export shape.
 
-UnitTests = logic in isolation (EFCore InMemory). IntegrationTests = WebApi host end-to-end.
+Before making significant changes, read:
+- docs/status.md
+- docs/decisions.md

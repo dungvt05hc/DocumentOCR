@@ -5,6 +5,7 @@ using DocumentOCR.Domain.Enums;
 using DocumentOCR.Infrastructure.Ocr;
 using DocumentOCR.Infrastructure.Persistence;
 using DocumentOCR.Infrastructure.Processing;
+using DocumentOCR.Infrastructure.Profiles;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -137,7 +138,7 @@ public class DocumentProcessingServiceTests
             ocrProvider,
             new FieldExtractionService(),
             new FieldNormalizationService(),
-            new FieldValidationService(),
+            new FieldValidationService(new DocumentProfileCatalog()),
             Options.Create(ocrOptions ?? new OcrOptions()),
             NullLogger<DocumentProcessingService>.Instance);
 

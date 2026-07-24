@@ -140,6 +140,15 @@ public class DocumentsController : ControllerBase
         return Ok(doc);
     }
 
+    // GET /api/documents/{id}/review — dynamic, document-category-driven review response
+    [HttpGet("{id:guid}/review")]
+    public async Task<IActionResult> GetReview(Guid id, CancellationToken ct)
+    {
+        var review = await _documentService.GetReviewByIdAsync(id, DefaultOrganizationId, ct);
+        if (review is null) return NotFound(new { error = $"Document {id} not found." });
+        return Ok(review);
+    }
+
     // POST /api/documents/{id}/process  — re-trigger OCR
     [HttpPost("{id:guid}/process")]
     [EnableRateLimiting("OcrProcessing")]

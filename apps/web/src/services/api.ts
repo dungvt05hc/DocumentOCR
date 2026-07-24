@@ -2,6 +2,7 @@ import axios from 'axios';
 import type {
   DocumentDetailDto,
   DocumentDto,
+  DocumentReviewResponse,
   ExportRequest,
   UpdateFieldsRequest,
   UploadFileResult,
@@ -31,6 +32,9 @@ export const getDocuments = () => api.get<DocumentDto[]>('/documents');
 
 export const getDocumentById = (id: string) =>
   api.get<DocumentDetailDto>(`/documents/${id}`);
+
+export const getDocumentReview = (id: string) =>
+  api.get<DocumentReviewResponse>(`/documents/${id}/review`);
 
 export const triggerProcessing = (id: string) =>
   api.post(`/documents/${id}/process`);

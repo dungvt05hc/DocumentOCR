@@ -6,6 +6,7 @@ using DocumentOCR.Infrastructure.Export;
 using DocumentOCR.Infrastructure.Ocr;
 using DocumentOCR.Infrastructure.Persistence;
 using DocumentOCR.Infrastructure.Processing;
+using DocumentOCR.Infrastructure.Profiles;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
 
@@ -73,7 +74,7 @@ public class MvpTestSuiteTests
     public void Validate_SampleVietnameseInvoice_DoesNotCreateVatMismatchWarning()
     {
         var fields = ExtractAndNormalize(VietnameseMvpTestData.InvoiceLines);
-        var sut = new FieldValidationService();
+        var sut = new FieldValidationService(new DocumentProfileCatalog());
 
         var warnings = sut.Validate(DocumentId, fields);
 
@@ -89,7 +90,7 @@ public class MvpTestSuiteTests
         var total = fields.Single(field => field.FieldName == nameof(FieldName.TotalAmount));
         total.NormalizedValue = "1200000";
 
-        var sut = new FieldValidationService();
+        var sut = new FieldValidationService(new DocumentProfileCatalog());
 
         var warnings = sut.Validate(DocumentId, fields);
 
@@ -133,7 +134,7 @@ public class MvpTestSuiteTests
         db.Documents.AddRange(invoice, receipt);
         await db.SaveChangesAsync();
 
-        var sut = new ClosedXmlExportService(db);
+        var sut = new ClosedXmlExportService(db, new DocumentProfileCatalog());
 
         var bytes = await sut.ExportAsync([invoice.Id, receipt.Id]);
 

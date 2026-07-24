@@ -385,17 +385,34 @@ button.primary,
   white-space: nowrap;
 }
 
-.field-editor input {
+.field-editor input,
+.field-editor select,
+.field-editor textarea {
   width: 100%;
   box-sizing: border-box;
   border: 1px solid #cfd6e4;
   border-radius: 6px;
   padding: 8px 10px;
+  font: inherit;
 }
 
-.field-editor.has-warning input {
+.field-editor textarea {
+  min-height: 60px;
+  resize: vertical;
+}
+
+.field-editor.has-warning input,
+.field-editor.has-warning select,
+.field-editor.has-warning textarea {
   border-color: #d98b00;
   background: #fffaf0;
+}
+
+.field-editor.is-missing-required input,
+.field-editor.is-missing-required select,
+.field-editor.is-missing-required textarea {
+  border-color: #b42318;
+  background: #fff2f1;
 }
 
 .field-warning {
@@ -403,10 +420,37 @@ button.primary,
   font-size: 12px;
 }
 
+.field-debug {
+  color: #667085;
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+}
+
+.review-section {
+  margin-bottom: 18px;
+}
+
+.review-section h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: #172033;
+}
+
 .review-actions {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
   margin-top: 14px;
+}
+
+.debug-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #667085;
+  font-weight: 400;
 }
 
 @media (max-width: 900px) {

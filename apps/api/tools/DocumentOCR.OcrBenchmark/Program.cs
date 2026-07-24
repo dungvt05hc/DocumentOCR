@@ -1,6 +1,7 @@
 using DocumentOCR.Application.Interfaces;
 using DocumentOCR.Infrastructure.Ocr;
 using DocumentOCR.Infrastructure.Processing;
+using DocumentOCR.Infrastructure.Profiles;
 using DocumentOCR.OcrBenchmark;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -104,7 +105,7 @@ if (files.Count == 0)
 var processor = new BenchmarkFileProcessor(
     new FieldExtractionService(),
     new FieldNormalizationService(),
-    new FieldValidationService());
+    new FieldValidationService(new DocumentProfileCatalog()));
 
 // Ground truth is optional: comparison columns are populated when present, left blank otherwise.
 var groundTruthPath = options.GroundTruthPath ?? Path.Combine(options.InputDir, "ground-truth.csv");

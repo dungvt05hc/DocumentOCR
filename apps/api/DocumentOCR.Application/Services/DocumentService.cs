@@ -11,15 +11,18 @@ public class DocumentService
     private readonly IApplicationDbContext _db;
     private readonly IDocumentStorageService _storage;
     private readonly IFieldValidationService _validation;
+    private readonly DocumentReviewMappingService _reviewMapping;
 
     public DocumentService(
         IApplicationDbContext db,
         IDocumentStorageService storage,
-        IFieldValidationService validation)
+        IFieldValidationService validation,
+        DocumentReviewMappingService reviewMapping)
     {
         _db = db;
         _storage = storage;
         _validation = validation;
+        _reviewMapping = reviewMapping;
     }
 
     public async Task<DocumentDto> UploadAsync(
@@ -71,6 +74,19 @@ public class DocumentService
         return MapToDetailDto(doc);
     }
 
+    /// <summary>Dynamic, document-category-driven review response — see <see cref="DocumentReviewMappingService"/>.</summary>
+    public async Task<DocumentReviewResponse?> GetReviewByIdAsync(Guid id, Guid organizationId, CancellationToken ct = default)
+    {
+        var doc = await _db.Documents
+            .Include(d => d.Fields)
+            .Include(d => d.ValidationWarnings)
+            .Include(d => d.OcrProviderLogs)
+            .FirstOrDefaultAsync(d => d.Id == id && d.OrganizationId == organizationId, ct);
+
+        if (doc is null) return null;
+        return _reviewMapping.Map(doc);
+    }
+
     public async Task MarkUploadedForProcessingAsync(Guid documentId, Guid organizationId, CancellationToken ct = default)
     {
         var doc = await _db.Documents
@@ -95,18 +111,23 @@ public class DocumentService
 
         foreach (var update in request.Fields)
         {
+            if (string.IsNullOrWhiteSpace(update.FieldName))
+                throw new ArgumentException("Field updates must include a non-empty FieldName.");
+
             var field = doc.Fields.FirstOrDefault(f => f.FieldName == update.FieldName);
             if (field is null)
             {
-                if (!Enum.TryParse<FieldName>(update.FieldName, out _))
-                    throw new ArgumentException($"'{update.FieldName}' is not a recognized field name.");
-
+                // FieldName is no longer restricted to the legacy FieldName enum — dynamic
+                // review profiles (see IDocumentProfileCatalog) define field keys (e.g.
+                // "BuyerName", "PONumber") that have no extractor yet, so the user must be able
+                // to create them here when filling in a field the profile shows as missing.
                 field = new ExtractedField { DocumentId = documentId, FieldName = update.FieldName };
                 doc.Fields.Add(field);
                 _db.ExtractedFields.Add(field);
             }
 
             field.NormalizedValue = update.NormalizedValue;
+            field.RawValue = update.RawValue ?? field.RawValue;
             field.IsEditedByUser = true;
             field.EditedAt = DateTime.UtcNow;
             field.UpdatedAt = DateTime.UtcNow;

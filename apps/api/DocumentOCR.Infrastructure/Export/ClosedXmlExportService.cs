@@ -42,7 +42,62 @@ public partial class ClosedXmlExportService : IExcelExportService
 
     private readonly IApplicationDbContext _db;
 
-    public ClosedXmlExportService(IApplicationDbContext db) => _db = db;
+    /// <summary>
+    /// Reverse alias lookup: canonical legacy FieldName (e.g. "SupplierName") → every review-profile
+    /// FieldKey that treats it as an alias (e.g. "MerchantName", "SellerName", "VendorName",
+    /// "StoreName"). Built once from <see cref="IDocumentProfileCatalog"/> so the profiles stay the
+    /// single source of truth for "these names mean the same thing" — no second hardcoded table.
+    /// </summary>
+    private readonly Dictionary<string, List<string>> _canonicalToAliasKeys;
+
+    public ClosedXmlExportService(IApplicationDbContext db, IDocumentProfileCatalog profileCatalog)
+    {
+        _db = db;
+        _canonicalToAliasKeys = BuildCanonicalToAliasKeys(profileCatalog);
+    }
+
+    private static Dictionary<string, List<string>> BuildCanonicalToAliasKeys(IDocumentProfileCatalog profileCatalog)
+    {
+        var map = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+
+        var profiles = Enum.GetValues<DocumentCategory>()
+            .Select(profileCatalog.GetProfile)
+            .Distinct();
+
+        foreach (var field in profiles.SelectMany(p => p.Sections).SelectMany(s => s.Fields))
+        {
+            foreach (var canonicalKey in field.AliasFieldNames)
+            {
+                if (!map.TryGetValue(canonicalKey, out var aliasKeys))
+                {
+                    aliasKeys = [];
+                    map[canonicalKey] = aliasKeys;
+                }
+
+                aliasKeys.Add(field.FieldKey);
+            }
+        }
+
+        return map;
+    }
+
+    /// <summary>Looks up <paramref name="canonicalKey"/> directly, falling back to any review-profile field that aliases it (see <see cref="_canonicalToAliasKeys"/>).</summary>
+    private string? ResolveFieldValue(IReadOnlyDictionary<string, string?> fields, string canonicalKey)
+    {
+        if (fields.TryGetValue(canonicalKey, out var direct) && !string.IsNullOrWhiteSpace(direct))
+            return direct;
+
+        if (!_canonicalToAliasKeys.TryGetValue(canonicalKey, out var aliasKeys))
+            return null;
+
+        foreach (var aliasKey in aliasKeys)
+        {
+            if (fields.TryGetValue(aliasKey, out var value) && !string.IsNullOrWhiteSpace(value))
+                return value;
+        }
+
+        return null;
+    }
 
     public async Task<byte[]> ExportAsync(IEnumerable<Guid> documentIds, CancellationToken ct = default)
     {
@@ -70,7 +125,7 @@ public partial class ClosedXmlExportService : IExcelExportService
         return stream.ToArray();
     }
 
-    private static void BuildDocumentsSheet(XLWorkbook workbook, IReadOnlyList<Document> documents)
+    private void BuildDocumentsSheet(XLWorkbook workbook, IReadOnlyList<Document> documents)
     {
         var worksheet = workbook.Worksheets.Add("Documents");
         WriteHeader(worksheet, DocumentColumns);
@@ -83,14 +138,14 @@ public partial class ClosedXmlExportService : IExcelExportService
 
             worksheet.Cell(row, 1).Value = document.OriginalFileName;
             worksheet.Cell(row, 2).Value = document.DocumentType.ToString();
-            worksheet.Cell(row, 3).Value = fields.GetValueOrDefault(nameof(FieldName.SupplierName)) ?? string.Empty;
-            worksheet.Cell(row, 4).Value = fields.GetValueOrDefault(nameof(FieldName.SupplierTaxCode)) ?? string.Empty;
-            worksheet.Cell(row, 5).Value = fields.GetValueOrDefault(nameof(FieldName.InvoiceNumber)) ?? string.Empty;
-            SetDateCell(worksheet.Cell(row, 6), fields.GetValueOrDefault(nameof(FieldName.InvoiceDate)));
-            SetMoneyCell(worksheet.Cell(row, 7), fields.GetValueOrDefault(nameof(FieldName.SubtotalAmount)));
-            SetMoneyCell(worksheet.Cell(row, 8), fields.GetValueOrDefault(nameof(FieldName.VatAmount)));
-            SetMoneyCell(worksheet.Cell(row, 9), fields.GetValueOrDefault(nameof(FieldName.TotalAmount)));
-            worksheet.Cell(row, 10).Value = fields.GetValueOrDefault(nameof(FieldName.Currency)) ?? string.Empty;
+            worksheet.Cell(row, 3).Value = ResolveFieldValue(fields, nameof(FieldName.SupplierName)) ?? string.Empty;
+            worksheet.Cell(row, 4).Value = ResolveFieldValue(fields, nameof(FieldName.SupplierTaxCode)) ?? string.Empty;
+            worksheet.Cell(row, 5).Value = ResolveFieldValue(fields, nameof(FieldName.InvoiceNumber)) ?? string.Empty;
+            SetDateCell(worksheet.Cell(row, 6), ResolveFieldValue(fields, nameof(FieldName.InvoiceDate)));
+            SetMoneyCell(worksheet.Cell(row, 7), ResolveFieldValue(fields, nameof(FieldName.SubtotalAmount)));
+            SetMoneyCell(worksheet.Cell(row, 8), ResolveFieldValue(fields, nameof(FieldName.VatAmount)));
+            SetMoneyCell(worksheet.Cell(row, 9), ResolveFieldValue(fields, nameof(FieldName.TotalAmount)));
+            worksheet.Cell(row, 10).Value = ResolveFieldValue(fields, nameof(FieldName.Currency)) ?? string.Empty;
             worksheet.Cell(row, 11).Value = document.ValidationWarnings.Count;
             worksheet.Cell(row, 12).Value = ReviewedStatus(document.Status);
             worksheet.Cell(row, 13).Value = document.CreatedAt;

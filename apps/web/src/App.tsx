@@ -4,8 +4,8 @@ import { DocumentTable } from './components/DocumentTable';
 import { ExportPanel } from './components/ExportPanel';
 import { FieldEditor } from './components/FieldEditor';
 import { UploadZone } from './components/UploadZone';
-import { getDocumentById, getDocuments, triggerProcessing } from './services/api';
-import type { DocumentDetailDto, DocumentDto, DocumentStatus, UploadFileResult } from './types';
+import { getDocumentReview, getDocuments, triggerProcessing } from './services/api';
+import type { DocumentDto, DocumentReviewResponse, DocumentStatus, UploadFileResult } from './types';
 
 type Page = 'upload' | 'documents' | 'export';
 type View = Page | 'review';
@@ -25,7 +25,7 @@ export default function App() {
   const [view, setView] = useState<View>('upload');
   const [documents, setDocuments] = useState<DocumentDto[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [reviewDoc, setReviewDoc] = useState<DocumentDetailDto | null>(null);
+  const [reviewDoc, setReviewDoc] = useState<DocumentReviewResponse | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('All');
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -66,7 +66,7 @@ export default function App() {
     });
 
   const handleViewDocument = async (id: string) => {
-    const response = await getDocumentById(id);
+    const response = await getDocumentReview(id);
     setReviewDoc(response.data);
     setView('review');
   };

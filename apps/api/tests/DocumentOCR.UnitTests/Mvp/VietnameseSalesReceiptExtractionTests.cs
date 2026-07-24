@@ -1,6 +1,7 @@
 using DocumentOCR.Domain.Entities;
 using DocumentOCR.Domain.Enums;
 using DocumentOCR.Infrastructure.Processing;
+using DocumentOCR.Infrastructure.Profiles;
 using Xunit;
 
 namespace DocumentOCR.UnitTests.Mvp;
@@ -41,7 +42,7 @@ public class VietnameseSalesReceiptExtractionTests
     public void Validate_MotaCafeReceipt_DoesNotRequireSupplierTaxCode()
     {
         var fields = ExtractAndNormalize();
-        var sut = new FieldValidationService();
+        var sut = new FieldValidationService(new DocumentProfileCatalog());
 
         var warnings = sut.Validate(DocumentId, fields);
 
@@ -53,7 +54,7 @@ public class VietnameseSalesReceiptExtractionTests
     public void Validate_MotaCafeReceipt_DoesNotFlagTotalAmountAsMissing()
     {
         var fields = ExtractAndNormalize();
-        var sut = new FieldValidationService();
+        var sut = new FieldValidationService(new DocumentProfileCatalog());
 
         var warnings = sut.Validate(DocumentId, fields);
 

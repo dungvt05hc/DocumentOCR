@@ -3,6 +3,7 @@ using DocumentOCR.Domain.Entities;
 using DocumentOCR.Domain.Enums;
 using DocumentOCR.Infrastructure.Export;
 using DocumentOCR.Infrastructure.Persistence;
+using DocumentOCR.Infrastructure.Profiles;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
 
@@ -15,7 +16,7 @@ public class ClosedXmlExportServiceTests
     {
         await using var db = CreateDbContext();
         var (firstDocument, secondDocument) = await SeedDocumentsAsync(db);
-        var sut = new ClosedXmlExportService(db);
+        var sut = new ClosedXmlExportService(db, new DocumentProfileCatalog());
 
         var bytes = await sut.ExportAsync([firstDocument.Id, secondDocument.Id]);
 
@@ -29,7 +30,7 @@ public class ClosedXmlExportServiceTests
     {
         await using var db = CreateDbContext();
         var (firstDocument, secondDocument) = await SeedDocumentsAsync(db);
-        var sut = new ClosedXmlExportService(db);
+        var sut = new ClosedXmlExportService(db, new DocumentProfileCatalog());
 
         var bytes = await sut.ExportAsync([firstDocument.Id, secondDocument.Id]);
 
@@ -52,7 +53,7 @@ public class ClosedXmlExportServiceTests
     {
         await using var db = CreateDbContext();
         var (firstDocument, secondDocument) = await SeedDocumentsAsync(db);
-        var sut = new ClosedXmlExportService(db);
+        var sut = new ClosedXmlExportService(db, new DocumentProfileCatalog());
 
         var bytes = await sut.ExportAsync([firstDocument.Id, secondDocument.Id]);
 
@@ -78,7 +79,7 @@ public class ClosedXmlExportServiceTests
     {
         await using var db = CreateDbContext();
         var (firstDocument, _) = await SeedDocumentsAsync(db);
-        var sut = new ClosedXmlExportService(db);
+        var sut = new ClosedXmlExportService(db, new DocumentProfileCatalog());
 
         var bytes = await sut.ExportAsync([firstDocument.Id]);
 
@@ -100,7 +101,7 @@ public class ClosedXmlExportServiceTests
     {
         await using var db = CreateDbContext();
         var (firstDocument, secondDocument) = await SeedDocumentsAsync(db);
-        var sut = new ClosedXmlExportService(db);
+        var sut = new ClosedXmlExportService(db, new DocumentProfileCatalog());
 
         var bytes = await sut.ExportAsync([firstDocument.Id, secondDocument.Id]);
 
@@ -117,6 +118,47 @@ public class ClosedXmlExportServiceTests
         Assert.Equal(nameof(FieldName.TotalAmount), sheet.Cell(4, 2).GetString());
         Assert.Equal("LOW_CONFIDENCE", sheet.Cell(4, 3).GetString());
         Assert.Equal("Info", sheet.Cell(4, 5).GetString());
+    }
+
+    [Fact]
+    public async Task ExportAsync_DocumentWithOnlyAliasFieldKey_StillPopulatesCanonicalColumn()
+    {
+        // "MerchantName" is a review-profile field key (see IDocumentProfileCatalog's PosReceipt
+        // profile) that aliases the legacy "SupplierName" — a document saved with only the alias
+        // key populated (e.g. because the user filled it in via the dynamic review UI) must still
+        // show up under the "Tên nhà cung cấp" (SupplierName) column, not be left blank.
+        await using var db = CreateDbContext();
+        var organization = new Organization { Name = "Alias Test Organization", Slug = "alias-test-organization" };
+        var document = new Document
+        {
+            OrganizationId = organization.Id,
+            OriginalFileName = "receipt-c.png",
+            StoredFilePath = "2026/07/receipt-c.png",
+            ContentType = "image/png",
+            FileSizeBytes = 512,
+            Status = DocumentStatus.Processed,
+            DocumentType = DocumentType.PosReceipt
+        };
+        document.Fields.Add(new ExtractedField
+        {
+            DocumentId = document.Id,
+            FieldName = "MerchantName",
+            RawValue = "MOTA CAFE",
+            NormalizedValue = "MOTA CAFE",
+            Confidence = 0.9,
+            IsEditedByUser = true
+        });
+
+        db.Organizations.Add(organization);
+        db.Documents.Add(document);
+        await db.SaveChangesAsync();
+
+        var sut = new ClosedXmlExportService(db, new DocumentProfileCatalog());
+        var bytes = await sut.ExportAsync([document.Id]);
+
+        using var workbook = new XLWorkbook(new MemoryStream(bytes));
+        var sheet = workbook.Worksheet("Documents");
+        Assert.Equal("MOTA CAFE", sheet.Cell(2, 3).GetString());
     }
 
     private static ApplicationDbContext CreateDbContext()
