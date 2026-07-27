@@ -155,6 +155,10 @@ public class DocumentProcessingService : IDocumentProcessingService
                 });
             }
 
+            document.TablesJson = ocrResult.Tables.Count > 0
+                ? JsonSerializer.Serialize(ocrResult.Tables)
+                : null;
+
             var extractedFields = _extraction.Extract(documentId, ocrResult);
             _logger.LogInformation(
                 "Extracted {FieldCount} fields for document {DocumentId}",

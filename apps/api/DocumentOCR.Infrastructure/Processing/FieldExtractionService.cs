@@ -54,12 +54,16 @@ public partial class FieldExtractionService : IFieldExtractionService
 
     private static readonly string[] InvoiceDateKeywords =
     [
-        "ngay hoa don", "ngay tao", "invoice date", "ngay"
+        "ngay hoa don", "ngay tao", "invoice date", "ngay", "date"
     ];
+
+    private static readonly string[] DueDateKeywords = ["due date"];
+
+    private static readonly string[] PoNumberKeywords = ["po number", "purchase order"];
 
     private static readonly string[] SubtotalKeywords =
     [
-        "cong tien hang", "subtotal", "thanh tien chua thue", "tien hang", "thanh tien", "tam tinh"
+        "cong tien hang", "subtotal", "sub total", "sub_total", "thanh tien chua thue", "tien hang", "thanh tien", "tam tinh"
     ];
 
     private static readonly string[] VatKeywords =
@@ -79,7 +83,8 @@ public partial class FieldExtractionService : IFieldExtractionService
         ("tong cong", 2),
         ("tong tien", 2),
         ("thanh toan", 2),
-        ("tong", 1)
+        ("tong", 1),
+        ("total", 2)
     ];
 
     private static readonly string[] NotesKeywords =
@@ -128,6 +133,10 @@ public partial class FieldExtractionService : IFieldExtractionService
 
         return candidates
             .Where(c => !string.IsNullOrWhiteSpace(c.RawValue))
+            // A website/domain is never a real invoice number — without this, a normalized
+            // search-text false-positive (e.g. "so" matching inside an unrelated word within a
+            // URL) can otherwise let InvoiceNumberValuePattern swallow the whole line.
+            .Where(c => c.FieldName != nameof(FieldName.InvoiceNumber) || !UrlLikePattern().IsMatch(c.RawValue!))
             .GroupBy(c => c.FieldName)
             .Select(g => g
                 .OrderByDescending(c => c.Confidence ?? 0)
@@ -346,6 +355,8 @@ public partial class FieldExtractionService : IFieldExtractionService
             AddTaxCodeLineCandidate(lines, candidates, i);
             AddInvoiceNumberLineCandidate(lines, candidates, i);
             AddInvoiceDateLineCandidate(lines, candidates, i);
+            AddDueDateLineCandidate(lines, candidates, i);
+            AddPoNumberLineCandidate(lines, candidates, i);
             AddAmountLineCandidates(lines, candidates, i);
             AddNotesLineCandidate(lines, candidates, i);
 
@@ -422,6 +433,13 @@ public partial class FieldExtractionService : IFieldExtractionService
         }
     }
 
+    /// <summary>
+    /// International-invoice labels (Bill To/Ship To/Tax) that never name a vendor even though
+    /// they can share the first few lines with the real vendor name — checked alongside the
+    /// Vietnamese exclusion keywords below rather than replacing them.
+    /// </summary>
+    private static readonly string[] VendorNameExclusionKeywords = ["bill to", "ship to", "tax"];
+
     private static bool IsLikelySupplierNameLine(LineContext line)
     {
         var text = line.Text.Trim();
@@ -431,9 +449,13 @@ public partial class FieldExtractionService : IFieldExtractionService
         if (ContainsAny(line.SearchText, TaxCodeKeywords)) return false;
         if (ContainsAny(line.SearchText, InvoiceNumberKeywords)) return false;
         if (ContainsAny(line.SearchText, InvoiceDateKeywords)) return false;
+        if (ContainsAny(line.SearchText, DueDateKeywords)) return false;
+        if (ContainsAny(line.SearchText, PoNumberKeywords)) return false;
         if (ContainsAny(line.SearchText, SupplierKeywords)) return false;
         if (ContainsAny(line.SearchText, NotesKeywords)) return false;
         if (ContainsAny(line.SearchText, AddressMarkers)) return false;
+        if (ContainsAny(line.SearchText, VendorNameExclusionKeywords)) return false;
+        if (GetAmountFieldName(line.SearchText) is not null) return false;
 
         if (InvoiceDocumentPattern().IsMatch(text) || ReceiptDocumentPattern().IsMatch(text)) return false;
         if (DateValuePattern().IsMatch(text)) return false;
@@ -508,6 +530,9 @@ public partial class FieldExtractionService : IFieldExtractionService
     {
         var line = lines[index];
         if (!ContainsAny(line.SearchText, InvoiceDateKeywords)) return;
+        // "Due Date:" is a distinct field (see AddDueDateLineCandidate) — the bare "date"
+        // keyword above must not also claim it as the invoice date.
+        if (ContainsAny(line.SearchText, DueDateKeywords)) return;
 
         var value = DateValuePattern().Match(line.Text).Value;
         if (string.IsNullOrWhiteSpace(value) && TryGetNearbyLine(lines, index, out var nearby))
@@ -528,12 +553,72 @@ public partial class FieldExtractionService : IFieldExtractionService
             SourceText: line.Text));
     }
 
+    /// <summary>International invoice "Due Date:" — a distinct field key ("DueDate", not part of the legacy <see cref="FieldName"/> enum) matching <c>DocumentProfileCatalog</c>'s international invoice profile.</summary>
+    private static void AddDueDateLineCandidate(
+        IReadOnlyList<LineContext> lines,
+        List<FieldCandidate> candidates,
+        int index)
+    {
+        var line = lines[index];
+        if (!ContainsAny(line.SearchText, DueDateKeywords)) return;
+
+        var value = DateValuePattern().Match(line.Text).Value;
+        if (string.IsNullOrWhiteSpace(value) && TryGetNearbyLine(lines, index, out var nearby))
+        {
+            value = DateValuePattern().Match(nearby.Text).Value;
+        }
+
+        if (string.IsNullOrWhiteSpace(value)) return;
+
+        candidates.Add(new FieldCandidate(
+            "DueDate",
+            value,
+            Score(line, 0.86),
+            line.PageNumber,
+            line.BoundingBox,
+            SourcePriority: 55,
+            SourceMethod: "LineKeyword",
+            SourceText: line.Text));
+    }
+
+    /// <summary>International invoice "PO Number:"/"Purchase Order:" — a distinct field key ("PONumber") matching <c>DocumentProfileCatalog</c>'s international invoice profile. PO numbers can be short (e.g. "35"), so the value is whatever follows the label rather than the stricter <see cref="InvoiceNumberValuePattern"/>.</summary>
+    private static void AddPoNumberLineCandidate(
+        IReadOnlyList<LineContext> lines,
+        List<FieldCandidate> candidates,
+        int index)
+    {
+        var line = lines[index];
+        if (!ContainsAny(line.SearchText, PoNumberKeywords)) return;
+
+        var value = ValueAfterLabel(line.Text);
+        if (string.IsNullOrWhiteSpace(value) && TryGetNearbyLine(lines, index, out var nearby))
+        {
+            value = nearby.Text;
+        }
+
+        if (string.IsNullOrWhiteSpace(value)) return;
+
+        candidates.Add(new FieldCandidate(
+            "PONumber",
+            CleanValue(value),
+            Score(line, 0.84),
+            line.PageNumber,
+            line.BoundingBox,
+            SourcePriority: 55,
+            SourceMethod: "LineKeyword",
+            SourceText: line.Text));
+    }
+
     private static void AddAmountLineCandidates(
         IReadOnlyList<LineContext> lines,
         List<FieldCandidate> candidates,
         int index)
     {
         var line = lines[index];
+        // A spelled-out "total in words" line is not the numeric total — letting it through
+        // could otherwise outrank the real "TOTAL: 734.33 EUR" line's genuine numeric value.
+        if (line.SearchText.Contains("in words", StringComparison.Ordinal)) return;
+
         var fieldName = GetAmountFieldName(line.SearchText);
         if (fieldName is null) return;
 
@@ -903,7 +988,11 @@ public partial class FieldExtractionService : IFieldExtractionService
     [GeneratedRegex(@"[A-Z0-9][A-Z0-9\-/.]{2,}", RegexOptions.IgnoreCase)]
     private static partial Regex InvoiceNumberValuePattern();
 
-    [GeneratedRegex(@"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{1,2}\.\d{1,2}\.\d{2,4}|\d{4}-\d{1,2}-\d{1,2}")]
+    // The last alternative (\d{1,2}[-\s][A-Za-z]{3,9}[-\s]\d{2,4}) covers English "dd-MMM-yyyy"
+    // / "dd MMMM yyyy" style dates (e.g. "20-Mar-2008") common on international invoices —
+    // DateTime.TryParse's culture-aware fallback in FieldNormalizationService.NormalizeDate
+    // already handles that shape once it's isolated from any surrounding label text like this.
+    [GeneratedRegex(@"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{1,2}\.\d{1,2}\.\d{2,4}|\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[-\s][A-Za-z]{3,9}[-\s]\d{2,4}")]
     private static partial Regex DateValuePattern();
 
     [GeneratedRegex(@"(?:VND|VNĐ|₫|đ)?\s*\d+(?:[.,\s]\d{3})*(?:[.,]\d+)?\s*(?:VND|VNĐ|₫|đ)?", RegexOptions.IgnoreCase)]
@@ -912,8 +1001,12 @@ public partial class FieldExtractionService : IFieldExtractionService
     [GeneratedRegex(@"^\d{1,3}(?:\.\d{3})+$")]
     private static partial Regex VietnameseGroupedMoneyPattern();
 
-    [GeneratedRegex(@"(?:VND|VNĐ|₫|đồng|dong)", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"(?:VND|VNĐ|₫|đồng|dong|EUR|USD|GBP|JPY|CNY|€|£|\$)", RegexOptions.IgnoreCase)]
     private static partial Regex CurrencyMarkerPattern();
+
+    /// <summary>URL/domain shape — an <see cref="InvoiceNumberValuePattern"/> match this loose can otherwise swallow a website line whole (e.g. a normalized search text containing "so" as a false-positive substring match of an unrelated word).</summary>
+    [GeneratedRegex(@"^(https?://|www\.)|\.[a-z]{2,4}(/\S*)?$", RegexOptions.IgnoreCase)]
+    private static partial Regex UrlLikePattern();
 
     [GeneratedRegex(@"(?:HÓA\s*ĐƠN|HOA\s*DON|Invoice)", RegexOptions.IgnoreCase)]
     private static partial Regex InvoiceDocumentPattern();

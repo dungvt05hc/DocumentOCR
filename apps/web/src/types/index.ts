@@ -89,8 +89,37 @@ export interface FieldUpdateItem {
   rawValue?: string | null;
 }
 
+export interface TableCellUpdateItem {
+  columnKey: string | null;
+  text: string;
+  normalizedValue?: string | null;
+}
+
+export interface TableRowUpdateItem {
+  rowIndex: number;
+  cells: TableCellUpdateItem[];
+}
+
+export interface TableUpdateItem {
+  tableId: string;
+  rows: TableRowUpdateItem[];
+}
+
+/** Accepted by the save API for contract completeness but not persisted for MVP — see ReviewLineItem. */
+export interface LineItemUpdateItem {
+  lineNumber: number;
+  description: string | null;
+  quantity: number | null;
+  unit: string | null;
+  unitPrice: number | null;
+  amount: number | null;
+  currency: string | null;
+}
+
 export interface UpdateFieldsRequest {
   fields: FieldUpdateItem[];
+  tables?: TableUpdateItem[];
+  lineItems?: LineItemUpdateItem[];
 }
 
 // ── Dynamic document review (document-category-driven profiles) ──────────────
@@ -157,6 +186,88 @@ export interface ReviewWarningDto {
   message: string;
 }
 
+// ── Detected OCR tables + candidate line items ────────────────────────────────
+
+export interface ReviewTableColumn {
+  columnIndex: number;
+  columnKey: string;
+  label: string;
+  normalizedKey: string | null;
+  dataType: string | null;
+  confidence: number | null;
+}
+
+export interface ReviewTableCell {
+  rowIndex: number;
+  columnIndex: number;
+  columnKey: string | null;
+  text: string;
+  normalizedValue: string | null;
+  confidence: number | null;
+  sourceBoundingBoxJson: string | null;
+  isHeader: boolean;
+  isEditable: boolean;
+}
+
+export interface ReviewTableRow {
+  rowIndex: number;
+  rowType: 'Header' | 'Data' | string;
+  cells: ReviewTableCell[];
+}
+
+export interface ReviewTable {
+  tableId: string;
+  title: string | null;
+  pageNumber: number | null;
+  rowCount: number;
+  columnCount: number;
+  confidence: number | null;
+  tableType: string | null;
+  columns: ReviewTableColumn[];
+  rows: ReviewTableRow[];
+  sourceBoundingBoxJson: string | null;
+}
+
+export interface ReviewLineItem {
+  lineNumber: number;
+  description: string | null;
+  quantity: number | null;
+  unit: string | null;
+  unitPrice: number | null;
+  amount: number | null;
+  currency: string | null;
+  confidence: number | null;
+  sourceTableId: string;
+  sourceRowIndex: number;
+  isEditable: boolean;
+  warnings: string[];
+}
+
+export interface OcrDebugKeyValuePair {
+  key: string | null;
+  value: string | null;
+  confidence: number | null;
+}
+
+export interface OcrDebugData {
+  fullText: string | null;
+  lines: string[];
+  paragraphs: string[];
+  keyValuePairs: OcrDebugKeyValuePair[];
+  rawProviderResponsePath: string | null;
+  normalizedOcrResultPath: string | null;
+  ocrSummary: string | null;
+}
+
+/** GET /api/documents/{id}/ocr-debug response — a superset of OcrDebugData with tables/fields/warnings. */
+export interface OcrDebugResponse extends OcrDebugData {
+  documentId: string;
+  tables: ReviewTable[];
+  fields: ExtractedFieldDto[];
+  warnings: ValidationWarningDto[];
+  rawProviderResponseJson: string | null;
+}
+
 export interface DocumentReviewResponse {
   documentId: string;
   fileName: string;
@@ -170,6 +281,9 @@ export interface DocumentReviewResponse {
   overallConfidence: number | null;
   sections: ReviewSection[];
   warnings: ReviewWarningDto[];
+  tables: ReviewTable[];
+  lineItems: ReviewLineItem[];
+  debugData: OcrDebugData | null;
   debugSummary: string | null;
 }
 

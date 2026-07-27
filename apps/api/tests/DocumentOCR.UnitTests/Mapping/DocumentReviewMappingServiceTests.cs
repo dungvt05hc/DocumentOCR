@@ -1,6 +1,9 @@
+using System.Text.Json;
+using DocumentOCR.Application.Models;
 using DocumentOCR.Application.Services;
 using DocumentOCR.Domain.Entities;
 using DocumentOCR.Domain.Enums;
+using DocumentOCR.Infrastructure.Processing;
 using DocumentOCR.Infrastructure.Profiles;
 using Xunit;
 
@@ -8,7 +11,7 @@ namespace DocumentOCR.UnitTests.Mapping;
 
 public class DocumentReviewMappingServiceTests
 {
-    private readonly DocumentReviewMappingService _sut = new(new DocumentProfileCatalog());
+    private readonly DocumentReviewMappingService _sut = new(new DocumentProfileCatalog(), new ReviewTableBuilder());
 
     [Fact]
     public void Map_VatInvoiceWithLegacySupplierName_PopulatesSellerNameViaAlias()
@@ -107,6 +110,47 @@ public class DocumentReviewMappingServiceTests
         Assert.Equal(DocumentCategory.PosReceipt, response.DocumentCategory);
         Assert.Contains(response.Sections, s => s.SectionKey == "merchant");
         Assert.DoesNotContain(response.Sections, s => s.SectionKey == "seller");
+    }
+
+    [Fact]
+    public void Map_DocumentWithStoredTablesJson_PopulatesTablesWithNormalizedColumns()
+    {
+        var document = NewDocument(DocumentType.Invoice);
+        document.TablesJson = JsonSerializer.Serialize(new List<OcrTable>
+        {
+            new()
+            {
+                RowCount = 2,
+                ColumnCount = 3,
+                Cells =
+                [
+                    new() { RowIndex = 0, ColumnIndex = 0, Text = "ITEMS", Kind = "columnHeader" },
+                    new() { RowIndex = 0, ColumnIndex = 1, Text = "QUANTITY", Kind = "columnHeader" },
+                    new() { RowIndex = 0, ColumnIndex = 2, Text = "PRICE", Kind = "columnHeader" },
+                    new() { RowIndex = 1, ColumnIndex = 0, Text = "Widget" },
+                    new() { RowIndex = 1, ColumnIndex = 1, Text = "2" },
+                    new() { RowIndex = 1, ColumnIndex = 2, Text = "10.00" }
+                ]
+            }
+        });
+
+        var response = _sut.Map(document);
+
+        var table = Assert.Single(response.Tables);
+        Assert.Equal(
+            ["Description", "Quantity", "UnitPrice"],
+            table.Columns.Select(c => c.NormalizedKey));
+    }
+
+    [Fact]
+    public void Map_DocumentWithNoTables_ReturnsEmptyTablesAndLineItemsWithoutThrowing()
+    {
+        var document = NewDocument(DocumentType.Invoice);
+
+        var response = _sut.Map(document);
+
+        Assert.Empty(response.Tables);
+        Assert.Empty(response.LineItems);
     }
 
     private static Document NewDocument(DocumentType documentType)

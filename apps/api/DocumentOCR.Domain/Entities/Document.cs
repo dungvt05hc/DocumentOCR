@@ -20,6 +20,9 @@ public class Document : BaseEntity
     public DateTime? ProcessingCompletedAt { get; set; }
     public string? ErrorMessage { get; set; }
 
+    /// <summary>Tables detected by the OCR provider's layout analysis, serialized as JSON (<c>List&lt;OcrTable&gt;</c>). Null when none were detected.</summary>
+    public string? TablesJson { get; set; }
+
     public Organization Organization { get; set; } = null!;
     public ICollection<DocumentPage> Pages { get; set; } = new List<DocumentPage>();
     public ICollection<ExtractedField> Fields { get; set; } = new List<ExtractedField>();

@@ -1,7 +1,10 @@
 using System.Globalization;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using ClosedXML.Excel;
+using DocumentOCR.Application.DTOs;
 using DocumentOCR.Application.Interfaces;
+using DocumentOCR.Application.Models;
 using DocumentOCR.Domain.Entities;
 using DocumentOCR.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
@@ -41,6 +44,7 @@ public partial class ClosedXmlExportService : IExcelExportService
     ];
 
     private readonly IApplicationDbContext _db;
+    private readonly IReviewTableBuilder _tableBuilder;
 
     /// <summary>
     /// Reverse alias lookup: canonical legacy FieldName (e.g. "SupplierName") → every review-profile
@@ -50,10 +54,11 @@ public partial class ClosedXmlExportService : IExcelExportService
     /// </summary>
     private readonly Dictionary<string, List<string>> _canonicalToAliasKeys;
 
-    public ClosedXmlExportService(IApplicationDbContext db, IDocumentProfileCatalog profileCatalog)
+    public ClosedXmlExportService(IApplicationDbContext db, IDocumentProfileCatalog profileCatalog, IReviewTableBuilder tableBuilder)
     {
         _db = db;
         _canonicalToAliasKeys = BuildCanonicalToAliasKeys(profileCatalog);
+        _tableBuilder = tableBuilder;
     }
 
     private static Dictionary<string, List<string>> BuildCanonicalToAliasKeys(IDocumentProfileCatalog profileCatalog)
@@ -116,13 +121,25 @@ public partial class ClosedXmlExportService : IExcelExportService
             .ThenBy(d => d.CreatedAt)
             .ToList();
 
+        var tablesByDocument = documents.ToDictionary(
+            d => d.Id,
+            d => _tableBuilder.BuildTables(DeserializeTables(d.TablesJson)));
+
         using var workbook = new XLWorkbook();
         BuildDocumentsSheet(workbook, documents);
+        BuildTablesSheet(workbook, documents, tablesByDocument);
+        BuildLineItemsSheet(workbook, documents, tablesByDocument);
         BuildWarningsSheet(workbook, documents);
 
         using var stream = new MemoryStream();
         workbook.SaveAs(stream);
         return stream.ToArray();
+    }
+
+    private static IReadOnlyList<OcrTable> DeserializeTables(string? tablesJson)
+    {
+        if (string.IsNullOrWhiteSpace(tablesJson)) return [];
+        return JsonSerializer.Deserialize<List<OcrTable>>(tablesJson) ?? [];
     }
 
     private void BuildDocumentsSheet(XLWorkbook workbook, IReadOnlyList<Document> documents)
@@ -153,6 +170,106 @@ public partial class ClosedXmlExportService : IExcelExportService
         }
 
         FormatWorksheet(worksheet, DocumentColumns.Length);
+    }
+
+    /// <summary>
+    /// One row per detected table row (including the header row, so the raw table is fully
+    /// recoverable from the sheet). Columns beyond a given table's own width are left blank —
+    /// source tables can have different column counts, so the sheet is sized to the widest one
+    /// across the exported set rather than assuming a fixed shape. A document with no tables
+    /// simply contributes no rows; it never blocks the export.
+    /// </summary>
+    private void BuildTablesSheet(
+        XLWorkbook workbook,
+        IReadOnlyList<Document> documents,
+        IReadOnlyDictionary<Guid, List<ReviewTable>> tablesByDocument)
+    {
+        var worksheet = workbook.Worksheets.Add("Tables");
+
+        var maxColumnCount = tablesByDocument.Values
+            .SelectMany(tables => tables)
+            .Select(t => t.ColumnCount)
+            .DefaultIfEmpty(0)
+            .Max();
+
+        var columns = new List<ExportColumn> { new("FileName", "Tên tệp"), new("TableId", "Bảng"), new("PageNumber", "Trang"), new("RowIndex", "Dòng") };
+        for (var i = 0; i < maxColumnCount; i++)
+            columns.Add(new ExportColumn($"Column{i + 1}", $"Cột {i + 1}"));
+
+        WriteHeader(worksheet, columns);
+
+        var row = 2;
+        foreach (var document in documents)
+        {
+            foreach (var table in tablesByDocument.GetValueOrDefault(document.Id, []))
+            {
+                foreach (var tableRow in table.Rows.OrderBy(r => r.RowIndex))
+                {
+                    worksheet.Cell(row, 1).Value = document.OriginalFileName;
+                    worksheet.Cell(row, 2).Value = table.TableId;
+                    SetOptionalNumberCell(worksheet.Cell(row, 3), table.PageNumber);
+                    worksheet.Cell(row, 4).Value = tableRow.RowIndex;
+
+                    var cellsByColumn = tableRow.Cells.ToDictionary(c => c.ColumnIndex, c => c.Text);
+                    for (var columnIndex = 0; columnIndex < maxColumnCount; columnIndex++)
+                    {
+                        worksheet.Cell(row, 5 + columnIndex).Value = cellsByColumn.GetValueOrDefault(columnIndex, string.Empty);
+                    }
+
+                    row++;
+                }
+            }
+        }
+
+        FormatWorksheet(worksheet, columns.Count);
+    }
+
+    private static readonly ExportColumn[] LineItemColumns =
+    [
+        new("FileName", "Tên tệp"),
+        new("LineNumber", "Dòng số"),
+        new("Description", "Mô tả"),
+        new("Quantity", "Số lượng"),
+        new("Unit", "Đơn vị"),
+        new("UnitPrice", "Đơn giá"),
+        new("Amount", "Thành tiền"),
+        new("Currency", "Tiền tệ"),
+        new("Confidence", "Độ tin cậy"),
+        new("SourceTableId", "Bảng nguồn"),
+        new("SourceRowIndex", "Dòng nguồn")
+    ];
+
+    /// <summary>One row per candidate line item — only present for documents whose detected tables produced any (see <see cref="IReviewTableBuilder.BuildLineItems"/>).</summary>
+    private void BuildLineItemsSheet(
+        XLWorkbook workbook,
+        IReadOnlyList<Document> documents,
+        IReadOnlyDictionary<Guid, List<ReviewTable>> tablesByDocument)
+    {
+        var worksheet = workbook.Worksheets.Add("LineItems");
+        WriteHeader(worksheet, LineItemColumns);
+
+        var row = 2;
+        foreach (var document in documents)
+        {
+            var lineItems = _tableBuilder.BuildLineItems(tablesByDocument.GetValueOrDefault(document.Id, []));
+            foreach (var lineItem in lineItems)
+            {
+                worksheet.Cell(row, 1).Value = document.OriginalFileName;
+                worksheet.Cell(row, 2).Value = lineItem.LineNumber;
+                worksheet.Cell(row, 3).Value = lineItem.Description ?? string.Empty;
+                SetOptionalNumberCell(worksheet.Cell(row, 4), lineItem.Quantity);
+                worksheet.Cell(row, 5).Value = lineItem.Unit ?? string.Empty;
+                SetOptionalNumberCell(worksheet.Cell(row, 6), lineItem.UnitPrice);
+                SetOptionalNumberCell(worksheet.Cell(row, 7), lineItem.Amount);
+                worksheet.Cell(row, 8).Value = lineItem.Currency ?? string.Empty;
+                SetOptionalNumberCell(worksheet.Cell(row, 9), lineItem.Confidence);
+                worksheet.Cell(row, 10).Value = lineItem.SourceTableId;
+                worksheet.Cell(row, 11).Value = lineItem.SourceRowIndex;
+                row++;
+            }
+        }
+
+        FormatWorksheet(worksheet, LineItemColumns.Length);
     }
 
     private static void BuildWarningsSheet(XLWorkbook workbook, IReadOnlyList<Document> documents)
@@ -219,6 +336,24 @@ public partial class ClosedXmlExportService : IExcelExportService
         }
 
         cell.Value = value ?? string.Empty;
+    }
+
+    private static void SetOptionalNumberCell(IXLCell cell, int? value)
+    {
+        if (value.HasValue) cell.Value = value.Value;
+        else cell.Value = string.Empty;
+    }
+
+    private static void SetOptionalNumberCell(IXLCell cell, decimal? value)
+    {
+        if (value.HasValue) cell.Value = value.Value;
+        else cell.Value = string.Empty;
+    }
+
+    private static void SetOptionalNumberCell(IXLCell cell, double? value)
+    {
+        if (value.HasValue) cell.Value = value.Value;
+        else cell.Value = string.Empty;
     }
 
     private static string ReviewedStatus(DocumentStatus status)

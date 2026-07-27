@@ -37,6 +37,7 @@ public static class DependencyInjection
 
         // ── OCR provider ─────────────────────────────────────────────────────────
         services.Configure<OcrOptions>(configuration.GetSection(OcrOptions.SectionName));
+        services.Configure<OcrDebugOptions>(configuration.GetSection(OcrDebugOptions.SectionName));
 
         // Selected via "Ocr:Provider" config ("Fake" | "Azure" | "Paddle"); defaults to Fake so
         // local/test environments never accidentally call a real provider without opting in.
@@ -75,6 +76,9 @@ public static class DependencyInjection
         services.AddScoped<IFieldNormalizationService, FieldNormalizationService>();
         services.AddScoped<IFieldValidationService, FieldValidationService>();
         services.AddScoped<IDocumentProcessingService, DocumentProcessingService>();
+
+        // Pure functions over already-loaded data, no per-request state — safe as a singleton.
+        services.AddSingleton<IReviewTableBuilder, ReviewTableBuilder>();
 
         // ── Export ───────────────────────────────────────────────────────────────
         services.AddScoped<IExcelExportService, ClosedXmlExportService>();

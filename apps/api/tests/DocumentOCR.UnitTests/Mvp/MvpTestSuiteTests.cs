@@ -134,7 +134,7 @@ public class MvpTestSuiteTests
         db.Documents.AddRange(invoice, receipt);
         await db.SaveChangesAsync();
 
-        var sut = new ClosedXmlExportService(db, new DocumentProfileCatalog());
+        var sut = new ClosedXmlExportService(db, new DocumentProfileCatalog(), new ReviewTableBuilder());
 
         var bytes = await sut.ExportAsync([invoice.Id, receipt.Id]);
 

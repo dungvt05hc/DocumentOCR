@@ -29,6 +29,15 @@ public class DocumentReviewResponse
     public List<ReviewSection> Sections { get; set; } = new();
     public List<ReviewWarningDto> Warnings { get; set; } = new();
 
+    /// <summary>Tables detected by the OCR provider's layout analysis, reshaped for review/export. Empty when the document has none.</summary>
+    public List<ReviewTable> Tables { get; set; } = new();
+
+    /// <summary>Basic candidate line items derived from <see cref="Tables"/> — not guaranteed, not persisted. See <see cref="ReviewLineItem"/>.</summary>
+    public List<ReviewLineItem> LineItems { get; set; } = new();
+
+    /// <summary>Populated only when <c>OcrDebug:Enabled</c> is on — a lightweight debug summary. The fuller version (lines/paragraphs/key-value pairs) is served by <c>GET /api/documents/{id}/ocr-debug</c>.</summary>
+    public OcrDebugData? DebugData { get; set; }
+
     /// <summary>Reserved for a future OCR debug viewer surface — always null for now.</summary>
     public string? DebugSummary { get; set; }
 }

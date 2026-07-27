@@ -82,10 +82,31 @@ only produces a file download, it does not mutate document status (see Known iss
   hard-coded property name), per-field confidence/warning display, an OCR source/debug toggle
   (extraction method, source text, page number), save-edits flow that recomputes warnings
   server-side and marks the document `Reviewed`.
-- **Excel export**: `ClosedXmlExportService` (ClosedXML), two sheets (`Documents`,
-  `Warnings`) with Vietnamese headers, typed date/money cells, frozen header row, autofilter,
-  auto-sized columns, alias-aware column lookup (same profile-catalog alias groups as the review
-  response) so a document saved only under an alias field key still populates the right column.
+- **Detected OCR tables + candidate line items**: `NormalizedOcrDocument.Tables` (populated by
+  `AzureDocumentIntelligenceProvider` from Azure prebuilt-layout) is now persisted as
+  `Document.TablesJson` (one JSON column, written in `DocumentProcessingService.ProcessAsync`) so
+  it survives past the initial OCR pass. `IReviewTableBuilder`/`ReviewTableBuilder` reshapes it
+  into `DocumentReviewResponse.Tables` (header + rows, canonical `Description`/`Quantity`/
+  `UnitPrice`/`Amount` column keys recognized from English and Vietnamese headers) and derives
+  basic `LineItems` candidates from any table with a Description column. The review UI renders
+  both as editable tables below the dynamic sections; table cell edits are saved back into
+  `TablesJson` via the extended `PUT /api/documents/{id}/fields` request
+  (`Tables`/`LineItems` alongside the existing `Fields`) — line item edits are accepted for API
+  contract completeness but not persisted (see Known limitations). Excel export gained matching
+  `Tables` and `LineItems` sheets built from the same `IReviewTableBuilder`.
+- **OCR debug endpoint + viewer**: `GET /api/documents/{id}/ocr-debug` (gated by `OcrDebug:Enabled`,
+  off by default) returns full text, detected tables, extracted fields, warnings, and — when the
+  optional `Ocr:StoreNormalizedOcrResult` blob exists for the document — lines/paragraphs/
+  key-value pairs and (only with `OcrDebug:ExposeRawJson`) the raw provider response JSON. The
+  review UI's "Show OCR source/debug info" toggle now also lazily fetches this endpoint and renders
+  it as tabs (Full text / Lines / Key-value pairs / Raw JSON paths); hidden entirely when the
+  endpoint is disabled or returns nothing.
+- **Excel export**: `ClosedXmlExportService` (ClosedXML), now four sheets (`Documents`, `Tables`,
+  `LineItems`, `Warnings`) with Vietnamese headers, typed date/money cells, frozen header row,
+  autofilter, auto-sized columns, alias-aware column lookup (same profile-catalog alias groups as
+  the review response) so a document saved only under an alias field key still populates the right
+  column. A document with no detected tables simply contributes no `Tables`/`LineItems` rows —
+  export never fails or skips a document because of it.
 - **OCR provider audit log**: `OcrProviderLog` per processing run (provider, model, page count,
   duration, estimated cost, success/error) plus optional persisted artifacts (raw provider
   response JSON, full normalized OCR result JSON) gated by `Ocr:StoreRawProviderResponse` /
@@ -97,11 +118,12 @@ only produces a file download, it does not mutate document status (see Known iss
 - **Dev tooling**: `docker-compose.yml` (Postgres + API + frontend), a standalone
   `DocumentOCR.OcrBenchmark` console tool that runs Fake + every configured Azure model + Paddle
   over a sample folder and writes per-file debug JSON plus a comparison `summary.csv`.
-- **Test suite**: 327 xUnit test methods across 29 files in `DocumentOCR.UnitTests`
+- **Test suite**: 346 xUnit test methods across 30 files in `DocumentOCR.UnitTests`
   (normalization, extraction, validation, document profile catalog + review mapping, OCR
-  providers/registry/options, export shape, storage, domain entities, benchmark tool helpers) plus
-  end-to-end tests in `DocumentOCR.IntegrationTests` that drive upload → process (Fake) → review →
-  export through the real WebApi host.
+  providers/registry/options, review table building + line-item candidates, export shape
+  (including the new `Tables`/`LineItems` sheets), storage, domain entities, benchmark tool
+  helpers) plus end-to-end tests in `DocumentOCR.IntegrationTests` that drive upload → process
+  (Fake) → review → export through the real WebApi host.
 
 ## Partially completed features
 
@@ -110,9 +132,14 @@ only produces a file download, it does not mutate document status (see Known iss
   no reference implementation checked in; it must be stood up separately before `Ocr:Provider=Paddle`
   is usable. `PaddleOcrProvider` also never populates `Tables`/`KeyValuePairs`/`Fields` (line/text
   detection only), so extraction quality via Paddle is inherently lower than via Azure.
-- **Document review UI** — supports single-document review/edit and save, but there's no bulk-edit,
-  no "accept all", and no visual mapping from a field back to its location on the document preview
-  (bounding boxes are captured in the data model but not rendered in the UI).
+- **Document review UI** — supports single-document review/edit and save, plus editable detected
+  tables and line-item candidates, but there's no bulk-edit, no "accept all", and no visual mapping
+  from a field back to its location on the document preview (bounding boxes are captured in the
+  data model but not rendered in the UI).
+- **Table cell save** — editing a detected table cell in the review UI patches the matching cell in
+  `Document.TablesJson` and persists it; editing a line-item candidate is accepted by the same
+  request but intentionally not persisted (line items have no backing store — they're always
+  re-derived from `TablesJson` on the next read).
 - **`ExtractedField.IsRequired`** — the DB column still exists but is never set by any code path;
   required-ness is now computed at request time from the resolved `DocumentProfile`
   (`FieldValidationService`/`DocumentReviewMappingService`), not read from this column, so it
@@ -123,15 +150,15 @@ only produces a file download, it does not mutate document status (see Known iss
 
 ## Missing features
 
-- **Line-item (per-product) extraction** — deliberately out of scope for now; see
-  [decisions.md](decisions.md).
+- **Full line-item (per-product) extraction** — still deliberately out of scope; see
+  [decisions.md](decisions.md). What exists today (`ReviewTableBuilder.BuildLineItems`) is a basic
+  candidate builder — a table with a Description column plus Quantity/UnitPrice/Amount produces
+  row-level candidates, footer/total rows are filtered out by keyword, and unparsable numeric cells
+  are kept as `null` with a low confidence flag rather than failing — not guaranteed-correct
+  structured extraction. See Known limitations.
 - **Authentication / authorization / multi-tenancy** — `DocumentsController`/`ExportsController`
   hardcode `DefaultOrganizationId`; there is no login, no user model beyond `Organization`, no
   per-user data isolation.
-- **OCR Debug Viewer UI** — raw provider responses and normalized OCR results are persisted (DB +
-  file artifacts, path recorded on `OcrProviderLog`) and the benchmark tool writes comparable debug
-  JSON, but there is no API endpoint or frontend screen to browse/download them; today that data is
-  only reachable by querying Postgres or reading files directly on disk.
 - **CI pipeline** — no `.github/workflows` or other CI config in the repo; build/test only runs
   locally via `dotnet build`/`dotnet test`.
 - **Document deletion / archival** — no delete endpoint; uploaded files and DB rows are permanent.
@@ -179,6 +206,11 @@ real comparison run has not yet been executed and recorded as part of this revie
   effectively unverified beyond mapping/unit-test level.
 - Frontend has no automated tests (no `apps/web` test runner configured) — coverage relies entirely
   on backend tests and manual verification.
+- `ReviewTable`/`ReviewTableCell.Confidence` is always `null` — the underlying `OcrTableCell`
+  mapping from Azure's `DocumentTable` carries no per-cell confidence today. `ReviewLineItem.Confidence`
+  is a synthetic heuristic (not an OCR score), used only to flag a row "experimental" in the UI.
+- Line item candidates are unpersisted and re-derived from `TablesJson` on every read — editing one
+  in the review UI is accepted by the save API but discarded (see Partially completed features).
 
 ## Next priorities
 
@@ -215,8 +247,19 @@ before considering a change release-ready:
       (including filling in a field the profile shows as missing) and saving flips status to
       `Reviewed`.
 - [ ] Trigger a manual re-process (`POST /api/documents/{id}/process`) on a `Failed` document.
-- [ ] Select one or more `Processed`/`Reviewed` documents and export — download an `.xlsx` with a
-      `Documents` sheet and a `Warnings` sheet, Vietnamese headers, correctly typed date/money cells.
+- [ ] Open a document whose OCR provider detected a table (Azure `prebuilt-layout` on an invoice/
+      receipt with a line-item table) — a "Detected tables" block renders below the dynamic
+      sections, editable, with correct column headers; if the table has a Description column plus
+      Quantity/UnitPrice/Amount, a "Line item candidates" block also renders. A document with no
+      tables shows neither block and does not error.
+  - [ ] Edit a table cell and save — reload the review page and confirm the edit persisted.
+  - [ ] Toggle "Show OCR source/debug info" — full text/lines/key-value pairs/raw JSON path tabs
+      appear (lines/key-value pairs may be empty if `Ocr:StoreNormalizedOcrResult` is off for that
+      document); toggling off `OcrDebug:Enabled` in config hides the toggle's fetched content
+      entirely without an error in the UI.
+- [ ] Select one or more `Processed`/`Reviewed` documents and export — download an `.xlsx` with
+      `Documents`, `Tables`, `LineItems`, and `Warnings` sheets, Vietnamese headers, correctly typed
+      date/money cells, and table/line-item rows for any document that had detected tables.
 - [ ] Switch `Ocr:Provider` to `Azure` with real credentials (user-secrets) and repeat the upload →
       process → review → export flow against one real Vietnamese invoice (see
       [LOCAL_DEVELOPMENT.md](../LOCAL_DEVELOPMENT.md) step-by-step).

@@ -222,6 +222,50 @@ public class FieldExtractionServiceTests
         AssertField(fields, FieldName.DocumentType, nameof(DocumentCategory.InternationalInvoice));
     }
 
+    [Fact]
+    public void Extract_InternationalInvoiceTemplate1Style_ExtractsHeaderFieldsCorrectly()
+    {
+        // Mirrors the Template1_Instance0-style international invoice bug report: an English
+        // "Date:"/"Due Date:"/"PO Number:" invoice whose vendor-name and invoice-number
+        // extraction were previously wrong (see FieldExtractionService.cs history for the fixes).
+        var ocr = OcrFromLines(
+            "Date: 20-Mar-2008",
+            "Northwind Traders",
+            "www.ThompsonandSons.org",
+            "TAX INVOICE",
+            "Invoice Number: INV-2008-0035",
+            "Due Date: 16-Oct-2016",
+            "PO Number: 35",
+            "SUB_TOTAL: 725.30 EUR",
+            "TAX:VAT (3.88%): 28.18 EUR",
+            "TOTAL: 734.33 EUR");
+
+        var fields = _sut.Extract(DocumentId, ocr);
+
+        AssertField(fields, FieldName.SupplierName, "Northwind Traders");
+        AssertField(fields, FieldName.InvoiceNumber, "INV-2008-0035");
+        AssertField(fields, FieldName.InvoiceDate, "20-Mar-2008");
+        AssertStringField(fields, "DueDate", "16-Oct-2016");
+        AssertStringField(fields, "PONumber", "35");
+        AssertField(fields, FieldName.SubtotalAmount, "725.30");
+        AssertField(fields, FieldName.VatAmount, "28.18");
+        AssertField(fields, FieldName.TotalAmount, "734.33");
+        AssertField(fields, FieldName.Currency, "EUR");
+    }
+
+    [Fact]
+    public void Extract_WebsiteLineLooksLikeInvoiceNumberKeyword_NeverUsesWebsiteAsInvoiceNumber()
+    {
+        // "www.ThompsonandSons.org" normalizes to "www.thompsonandsons.org", which contains the
+        // bare Vietnamese "so" (số) keyword as a false-positive substring — without the URL
+        // rejection filter, this line alone would previously become the InvoiceNumber value.
+        var ocr = OcrFromLines("www.ThompsonandSons.org", "Unrelated filler content");
+
+        var fields = _sut.Extract(DocumentId, ocr);
+
+        Assert.DoesNotContain(fields, f => f.FieldName == nameof(FieldName.InvoiceNumber));
+    }
+
     private static NormalizedOcrDocument OcrFromLines(params string[] lines)
     {
         var ocrLines = lines
@@ -259,7 +303,16 @@ public class FieldExtractionServiceTests
         FieldName fieldName,
         string expected)
     {
-        var field = fields.SingleOrDefault(f => f.FieldName == fieldName.ToString());
+        AssertStringField(fields, fieldName.ToString(), expected);
+    }
+
+    /// <summary>For dynamic-profile-only field keys (e.g. "DueDate", "PONumber") that have no entry in the legacy <see cref="FieldName"/> enum.</summary>
+    private static void AssertStringField(
+        IEnumerable<DocumentOCR.Domain.Entities.ExtractedField> fields,
+        string fieldName,
+        string expected)
+    {
+        var field = fields.SingleOrDefault(f => f.FieldName == fieldName);
         Assert.NotNull(field);
         Assert.Equal(expected, field.RawValue);
         Assert.True(field.Confidence is >= 0 and <= 1);

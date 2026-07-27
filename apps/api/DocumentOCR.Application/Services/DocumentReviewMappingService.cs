@@ -1,3 +1,4 @@
+using System.Text.Json;
 using DocumentOCR.Application.DTOs;
 using DocumentOCR.Application.Interfaces;
 using DocumentOCR.Application.Models;
@@ -12,7 +13,7 @@ namespace DocumentOCR.Application.Services;
 /// whatever <see cref="ExtractedField"/> rows exist onto that profile's sections/fields. A
 /// required field with no matching data is still included, marked <c>IsMissing = true</c> — it is
 /// never silently dropped. Caller must have loaded <c>Document.Fields</c>/<c>ValidationWarnings</c>/
-/// <c>OcrProviderLogs</c> (same include shape <see cref="DocumentService.GetByIdAsync"/> already uses).
+/// <c>OcrProviderLogs</c>/<c>Pages</c> (same include shape <see cref="DocumentService.GetByIdAsync"/> already uses).
 /// </summary>
 public class DocumentReviewMappingService
 {
@@ -20,13 +21,20 @@ public class DocumentReviewMappingService
     private const string OtherFieldsSectionKey = "other";
 
     private readonly IDocumentProfileCatalog _profileCatalog;
+    private readonly IReviewTableBuilder _tableBuilder;
 
-    public DocumentReviewMappingService(IDocumentProfileCatalog profileCatalog)
+    public DocumentReviewMappingService(IDocumentProfileCatalog profileCatalog, IReviewTableBuilder tableBuilder)
     {
         _profileCatalog = profileCatalog;
+        _tableBuilder = tableBuilder;
     }
 
-    public DocumentReviewResponse Map(Document document)
+    /// <param name="includeDebugSummary">
+    /// When true, populates <see cref="DocumentReviewResponse.DebugData"/> with a lightweight
+    /// summary (full text + artifact paths). The richer view (lines/paragraphs/key-value pairs)
+    /// is only available via the dedicated <c>GET /api/documents/{id}/ocr-debug</c> endpoint.
+    /// </param>
+    public DocumentReviewResponse Map(Document document, bool includeDebugSummary = false)
     {
         var fieldsByName = document.Fields
             .GroupBy(f => f.FieldName)
@@ -87,6 +95,9 @@ public class DocumentReviewMappingService
         var latestLog = document.OcrProviderLogs.OrderByDescending(l => l.CreatedAt).FirstOrDefault();
         var confidences = sections.SelectMany(s => s.Fields).Where(f => f.Confidence.HasValue).Select(f => f.Confidence!.Value).ToList();
 
+        var tables = _tableBuilder.BuildTables(DeserializeTables(document.TablesJson));
+        var lineItems = _tableBuilder.BuildLineItems(tables);
+
         return new DocumentReviewResponse
         {
             DocumentId = document.Id,
@@ -100,7 +111,31 @@ public class DocumentReviewMappingService
             ProcessedAt = document.ProcessingCompletedAt,
             OverallConfidence = confidences.Count > 0 ? confidences.Average() : null,
             Sections = sections,
-            Warnings = warnings
+            Warnings = warnings,
+            Tables = tables,
+            LineItems = lineItems,
+            DebugData = includeDebugSummary ? BuildDebugSummary(document, latestLog, tables.Count) : null
+        };
+    }
+
+    private static IReadOnlyList<OcrTable> DeserializeTables(string? tablesJson)
+    {
+        if (string.IsNullOrWhiteSpace(tablesJson)) return [];
+        return JsonSerializer.Deserialize<List<OcrTable>>(tablesJson) ?? [];
+    }
+
+    private static OcrDebugData BuildDebugSummary(Document document, OcrProviderLog? latestLog, int tableCount)
+    {
+        var fullText = string.Join(
+            "\n\n",
+            document.Pages.OrderBy(p => p.PageNumber).Select(p => p.RawText));
+
+        return new OcrDebugData
+        {
+            FullText = fullText,
+            RawProviderResponsePath = latestLog?.RawResponsePath,
+            NormalizedOcrResultPath = latestLog?.NormalizedResultPath,
+            OcrSummary = $"{document.PageCount} page(s), {tableCount} table(s), {document.Fields.Count} field(s), {document.ValidationWarnings.Count} warning(s)"
         };
     }
 

@@ -349,14 +349,16 @@ abstractly, but end users reviewing their own invoices have no need to see raw O
 
 **Impact:**
 `Ocr:StoreRawProviderResponse`/`StoreNormalizedOcrResult` config flags control whether this data is
-written at all (can be disabled once a provider integration is trusted, to reduce storage). As
-noted in [status.md](status.md) ("Missing features"), there is currently no way to reach this data
-except querying Postgres or reading files directly — an actual "viewer" (even a simple internal
-API endpoint) has not been built yet.
+written at all (can be disabled once a provider integration is trusted, to reduce storage).
+**Update 2026-07-27:** a minimal viewer now exists — `GET /api/documents/{id}/ocr-debug` (gated by
+the new `OcrDebug:Enabled` config flag, off by default) plus a "Show OCR source/debug info" toggle
+in the review UI — but it remains a development/debug surface, not an end-user feature: raw
+provider JSON content is only included when `OcrDebug:ExposeRawJson` is also set, and the endpoint
+is disabled entirely (404) unless explicitly turned on.
 
 **Revisit when:**
-Developer friction from lacking a viewer becomes high enough to justify building even a minimal
-internal-only endpoint/screen — tracked as a "Next priorities" candidate in [status.md](status.md).
+Not expected to change further — the "developer tool, not end-user feature" framing still holds
+even with the endpoint built.
 
 ---
 
@@ -412,3 +414,54 @@ two new keyword-based branches in `FieldExtractionService.AddDocumentTypeCandida
 coarse for real samples — would need richer heuristics, not a profile-system change. Also revisit if
 profiles need to move to DB/config-driven management (explicitly out of scope for this iteration —
 profiles are static in-code data).
+
+---
+
+## 2026-07-27 — Review response includes detected OCR tables separately from extracted header fields
+
+**Decision:**
+Extend `DocumentReviewResponse` with `Tables: List<ReviewTable>` and a derived
+`LineItems: List<ReviewLineItem>`, distinct from the existing `Sections`/`Fields` header-field
+model, rather than trying to fold table data into the flat field list.
+
+**Reason:**
+Invoices and receipts often carry a detail table (line items, unit prices, totals breakdown) that
+a flat key-value field model has no way to represent. Header fields alone (supplier, tax code,
+invoice number/date, subtotal/VAT/total) are not enough for a user to fully review a document or
+for Excel export to reflect what's actually on the page — the table structure itself needs to
+survive review and land in the export, even before any per-row product extraction is trusted.
+
+**Impact:**
+- `NormalizedOcrDocument.Tables` (already correctly populated by
+  `AzureDocumentIntelligenceProvider.BuildTableResult` from Azure prebuilt-layout) previously died
+  at the end of `DocumentProcessingService.ProcessAsync` — used transiently only by
+  `FieldExtractionService.AddTableFooterCandidates` to mine a totals row, then discarded. It is now
+  persisted as `Document.TablesJson`, a single nullable `jsonb` column holding the serialized
+  `List<OcrTable>`, written once during processing and re-read at review/export/debug time.
+- Deliberately a JSON column, not a relational `DocumentTable`/`DocumentTableCell` schema — the
+  brief calls for MVP-friendly scope ("do not implement complex line-item extraction yet"), and
+  `OcrTable`/`OcrTableCell` are already plain Application-layer POCOs, so this is a direct
+  serialize/deserialize round-trip with no new mapping code. A full relational shape would add two
+  tables, FK plumbing, and EF configuration for a feature whose row-level data (line items) is
+  explicitly a "candidate, not guaranteed" concept for now.
+- `IReviewTableBuilder`/`ReviewTableBuilder` (Infrastructure.Processing, same "interface in
+  Application, OCR-shape logic in Infrastructure" pattern as `FieldExtractionService`) is the single
+  place that reshapes raw table cells into a header+rows view with canonical column keys
+  (Description/Quantity/UnitPrice/Amount, recognized from both English and Vietnamese headers) and
+  derives line-item candidates — reused identically by `DocumentReviewMappingService` and
+  `ClosedXmlExportService` so the normalization vocabulary exists exactly once.
+- `ReviewTable`/`ReviewTableCell.Confidence` stays `null` for now — the Azure `DocumentTable`
+  mapping carries no per-cell confidence today, a pre-existing gap not fixed as part of this change.
+  `ReviewLineItem.Confidence` is instead a synthetic heuristic flagging rows with unparsable numeric
+  cells or fuzzy column matches as "experimental" in the UI.
+- Table **cell** edits are persisted (patched into `TablesJson` via the extended
+  `PUT /api/documents/{id}/fields` request); line-item edits are accepted by the same endpoint for
+  API-contract completeness but not persisted, since line items have no backing store and are
+  always re-derived from `TablesJson`.
+
+**Revisit when:**
+Real per-product line-item extraction (reconciling quantity × unit price ≈ amount, handling
+multi-row items, structured accounting-system export) becomes a product requirement — that's a
+materially larger effort than this candidate builder and was explicitly deferred (see "No line-item
+(per-product) extraction yet" above). Also revisit the JSON-column choice if table data needs to be
+queried/filtered at the database level rather than always loaded whole per document.

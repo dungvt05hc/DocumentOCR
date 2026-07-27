@@ -1,5 +1,7 @@
+using System.Text.Json;
 using DocumentOCR.Application.DTOs;
 using DocumentOCR.Application.Interfaces;
+using DocumentOCR.Application.Models;
 using DocumentOCR.Application.Services;
 using DocumentOCR.Domain.Entities;
 using DocumentOCR.Domain.Enums;
@@ -212,6 +214,51 @@ public class DocumentServiceTests
     }
 
     [Fact]
+    public async Task GetOcrDebugAsync_DocumentWithStoredTables_IncludesTableCountAndCells()
+    {
+        await using var db = CreateDbContext();
+        var document = await SeedDocumentAsync(db, doc =>
+        {
+            doc.TablesJson = JsonSerializer.Serialize(new List<OcrTable>
+            {
+                new()
+                {
+                    RowCount = 2,
+                    ColumnCount = 2,
+                    Cells =
+                    [
+                        new() { RowIndex = 0, ColumnIndex = 0, Text = "ITEMS", Kind = "columnHeader" },
+                        new() { RowIndex = 0, ColumnIndex = 1, Text = "AMOUNT", Kind = "columnHeader" },
+                        new() { RowIndex = 1, ColumnIndex = 0, Text = "Widget" },
+                        new() { RowIndex = 1, ColumnIndex = 1, Text = "10.00" }
+                    ]
+                }
+            });
+        });
+        var sut = CreateSut(db);
+
+        var result = await sut.GetOcrDebugAsync(document.Id, OrganizationId, exposeRawJson: false);
+
+        Assert.NotNull(result);
+        var table = Assert.Single(result!.Tables);
+        Assert.Equal(2, table.RowCount);
+        Assert.Contains(table.Rows, r => r.Cells.Any(c => c.Text == "Widget"));
+    }
+
+    [Fact]
+    public async Task GetOcrDebugAsync_DocumentWithNoTables_ReturnsEmptyTablesWithoutThrowing()
+    {
+        await using var db = CreateDbContext();
+        var document = await SeedDocumentAsync(db, _ => { });
+        var sut = CreateSut(db);
+
+        var result = await sut.GetOcrDebugAsync(document.Id, OrganizationId, exposeRawJson: false);
+
+        Assert.NotNull(result);
+        Assert.Empty(result!.Tables);
+    }
+
+    [Fact]
     public async Task GetReviewByIdAsync_DocumentBelongsToAnotherOrganization_ReturnsNull()
     {
         await using var db = CreateDbContext();
@@ -294,7 +341,12 @@ public class DocumentServiceTests
         CreateSut(db, new NoOpDocumentStorageService());
 
     private static DocumentService CreateSut(ApplicationDbContext db, IDocumentStorageService storage) =>
-        new(db, storage, new FieldValidationService(new DocumentProfileCatalog()), new DocumentReviewMappingService(new DocumentProfileCatalog()));
+        new(
+            db,
+            storage,
+            new FieldValidationService(new DocumentProfileCatalog()),
+            new DocumentReviewMappingService(new DocumentProfileCatalog(), new ReviewTableBuilder()),
+            new ReviewTableBuilder());
 
     private static ApplicationDbContext CreateDbContext()
     {

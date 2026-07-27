@@ -453,6 +453,85 @@ button.primary,
   font-weight: 400;
 }
 
+.detected-table {
+  margin-bottom: 16px;
+}
+
+.editable-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.editable-table th,
+.editable-table td {
+  border: 1px solid #d0d5dd;
+  padding: 4px 6px;
+  text-align: left;
+}
+
+.editable-table th {
+  background: #f2f4f7;
+  color: #344054;
+  font-weight: 600;
+}
+
+.editable-table input {
+  width: 100%;
+  border: none;
+  background: transparent;
+  font-size: 13px;
+  padding: 2px;
+}
+
+.editable-table input:focus {
+  outline: 1px solid #1f5f8b;
+  background: #fff;
+}
+
+.editable-table tr.is-experimental {
+  background: #fff8e6;
+}
+
+.ocr-debug-viewer {
+  border-top: 1px solid #eaecf0;
+  padding-top: 12px;
+  margin-top: 14px;
+}
+
+.debug-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.debug-tabs button {
+  font-size: 12px;
+  padding: 4px 10px;
+  border: 1px solid #d0d5dd;
+  background: #fff;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.debug-tabs button.active {
+  background: #1f5f8b;
+  color: #fff;
+  border-color: #1f5f8b;
+}
+
+.debug-pre {
+  max-height: 300px;
+  overflow: auto;
+  background: #f9fafb;
+  border: 1px solid #eaecf0;
+  border-radius: 4px;
+  padding: 10px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 @media (max-width: 900px) {
   .app-header {
     align-items: stretch;

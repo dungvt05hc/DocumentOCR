@@ -4,6 +4,7 @@ import type {
   DocumentDto,
   DocumentReviewResponse,
   ExportRequest,
+  OcrDebugResponse,
   UpdateFieldsRequest,
   UploadFileResult,
 } from '../types';
@@ -35,6 +36,10 @@ export const getDocumentById = (id: string) =>
 
 export const getDocumentReview = (id: string) =>
   api.get<DocumentReviewResponse>(`/documents/${id}/review`);
+
+/** 404s when OcrDebug:Enabled is off — callers should treat that as "no debug data available", not an error. */
+export const getOcrDebug = (id: string) =>
+  api.get<OcrDebugResponse>(`/documents/${id}/ocr-debug`);
 
 export const triggerProcessing = (id: string) =>
   api.post(`/documents/${id}/process`);

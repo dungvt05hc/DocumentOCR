@@ -2,9 +2,11 @@ using DocumentOCR.Application.DTOs;
 using DocumentOCR.Application.Services;
 using DocumentOCR.Domain.Common;
 using DocumentOCR.Infrastructure.Jobs;
+using DocumentOCR.Infrastructure.Ocr;
 using Hangfire;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.Options;
 
 namespace DocumentOCR.WebApi.Controllers;
 
@@ -15,6 +17,7 @@ public class DocumentsController : ControllerBase
     private readonly DocumentService _documentService;
     private readonly IBackgroundJobClient _jobs;
     private readonly ILogger<DocumentsController> _logger;
+    private readonly OcrDebugOptions _ocrDebugOptions;
 
     // For MVP, we use a fixed organization. In a real multi-tenant app,
     // this would come from the authenticated user's claims.
@@ -44,11 +47,13 @@ public class DocumentsController : ControllerBase
     public DocumentsController(
         DocumentService documentService,
         IBackgroundJobClient jobs,
-        ILogger<DocumentsController> logger)
+        ILogger<DocumentsController> logger,
+        IOptions<OcrDebugOptions> ocrDebugOptions)
     {
         _documentService = documentService;
         _jobs = jobs;
         _logger = logger;
+        _ocrDebugOptions = ocrDebugOptions.Value;
     }
 
     // POST /api/documents/upload
@@ -144,9 +149,21 @@ public class DocumentsController : ControllerBase
     [HttpGet("{id:guid}/review")]
     public async Task<IActionResult> GetReview(Guid id, CancellationToken ct)
     {
-        var review = await _documentService.GetReviewByIdAsync(id, DefaultOrganizationId, ct);
+        var review = await _documentService.GetReviewByIdAsync(id, DefaultOrganizationId, _ocrDebugOptions.Enabled, ct);
         if (review is null) return NotFound(new { error = $"Document {id} not found." });
         return Ok(review);
+    }
+
+    // GET /api/documents/{id}/ocr-debug — development/debug view of the underlying OCR output.
+    // Disabled (404) unless OcrDebug:Enabled is set; never shown by default in production.
+    [HttpGet("{id:guid}/ocr-debug")]
+    public async Task<IActionResult> GetOcrDebug(Guid id, CancellationToken ct)
+    {
+        if (!_ocrDebugOptions.Enabled) return NotFound();
+
+        var debug = await _documentService.GetOcrDebugAsync(id, DefaultOrganizationId, _ocrDebugOptions.ExposeRawJson, ct);
+        if (debug is null) return NotFound(new { error = $"Document {id} not found." });
+        return Ok(debug);
     }
 
     // POST /api/documents/{id}/process  — re-trigger OCR
@@ -174,8 +191,8 @@ public class DocumentsController : ControllerBase
         [FromBody] UpdateFieldsRequest request,
         CancellationToken ct)
     {
-        if (request is null || request.Fields.Count == 0)
-            return BadRequest(new { error = "No field updates provided." });
+        if (request is null || (request.Fields.Count == 0 && request.Tables.Count == 0 && request.LineItems.Count == 0))
+            return BadRequest(new { error = "No field, table, or line item updates provided." });
 
         await _documentService.UpdateFieldsAsync(id, DefaultOrganizationId, request, ct);
         return NoContent();

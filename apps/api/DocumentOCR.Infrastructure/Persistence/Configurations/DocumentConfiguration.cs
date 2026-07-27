@@ -15,6 +15,7 @@ public class DocumentConfiguration : IEntityTypeConfiguration<Document>
         builder.Property(d => d.Status).HasConversion<string>().HasMaxLength(50);
         builder.Property(d => d.DocumentType).HasConversion<string>().HasMaxLength(50);
         builder.Property(d => d.ErrorMessage).HasMaxLength(2000);
+        builder.Property(d => d.TablesJson).HasColumnType("jsonb");
 
         builder.HasOne(d => d.Organization)
             .WithMany(o => o.Documents)

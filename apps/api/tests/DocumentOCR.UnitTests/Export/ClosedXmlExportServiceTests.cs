@@ -1,8 +1,11 @@
+using System.Text.Json;
 using ClosedXML.Excel;
+using DocumentOCR.Application.Models;
 using DocumentOCR.Domain.Entities;
 using DocumentOCR.Domain.Enums;
 using DocumentOCR.Infrastructure.Export;
 using DocumentOCR.Infrastructure.Persistence;
+using DocumentOCR.Infrastructure.Processing;
 using DocumentOCR.Infrastructure.Profiles;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
@@ -16,7 +19,7 @@ public class ClosedXmlExportServiceTests
     {
         await using var db = CreateDbContext();
         var (firstDocument, secondDocument) = await SeedDocumentsAsync(db);
-        var sut = new ClosedXmlExportService(db, new DocumentProfileCatalog());
+        var sut = new ClosedXmlExportService(db, new DocumentProfileCatalog(), new ReviewTableBuilder());
 
         var bytes = await sut.ExportAsync([firstDocument.Id, secondDocument.Id]);
 
@@ -30,7 +33,7 @@ public class ClosedXmlExportServiceTests
     {
         await using var db = CreateDbContext();
         var (firstDocument, secondDocument) = await SeedDocumentsAsync(db);
-        var sut = new ClosedXmlExportService(db, new DocumentProfileCatalog());
+        var sut = new ClosedXmlExportService(db, new DocumentProfileCatalog(), new ReviewTableBuilder());
 
         var bytes = await sut.ExportAsync([firstDocument.Id, secondDocument.Id]);
 
@@ -53,7 +56,7 @@ public class ClosedXmlExportServiceTests
     {
         await using var db = CreateDbContext();
         var (firstDocument, secondDocument) = await SeedDocumentsAsync(db);
-        var sut = new ClosedXmlExportService(db, new DocumentProfileCatalog());
+        var sut = new ClosedXmlExportService(db, new DocumentProfileCatalog(), new ReviewTableBuilder());
 
         var bytes = await sut.ExportAsync([firstDocument.Id, secondDocument.Id]);
 
@@ -79,7 +82,7 @@ public class ClosedXmlExportServiceTests
     {
         await using var db = CreateDbContext();
         var (firstDocument, _) = await SeedDocumentsAsync(db);
-        var sut = new ClosedXmlExportService(db, new DocumentProfileCatalog());
+        var sut = new ClosedXmlExportService(db, new DocumentProfileCatalog(), new ReviewTableBuilder());
 
         var bytes = await sut.ExportAsync([firstDocument.Id]);
 
@@ -101,7 +104,7 @@ public class ClosedXmlExportServiceTests
     {
         await using var db = CreateDbContext();
         var (firstDocument, secondDocument) = await SeedDocumentsAsync(db);
-        var sut = new ClosedXmlExportService(db, new DocumentProfileCatalog());
+        var sut = new ClosedXmlExportService(db, new DocumentProfileCatalog(), new ReviewTableBuilder());
 
         var bytes = await sut.ExportAsync([firstDocument.Id, secondDocument.Id]);
 
@@ -153,12 +156,78 @@ public class ClosedXmlExportServiceTests
         db.Documents.Add(document);
         await db.SaveChangesAsync();
 
-        var sut = new ClosedXmlExportService(db, new DocumentProfileCatalog());
+        var sut = new ClosedXmlExportService(db, new DocumentProfileCatalog(), new ReviewTableBuilder());
         var bytes = await sut.ExportAsync([document.Id]);
 
         using var workbook = new XLWorkbook(new MemoryStream(bytes));
         var sheet = workbook.Worksheet("Documents");
         Assert.Equal("MOTA CAFE", sheet.Cell(2, 3).GetString());
+    }
+
+    [Fact]
+    public async Task ExportAsync_DocumentWithDetectedTable_WritesTablesSheet()
+    {
+        await using var db = CreateDbContext();
+        var organization = new Organization { Name = "Tables Test Organization", Slug = "tables-test-organization" };
+        var document = new Document
+        {
+            OrganizationId = organization.Id,
+            OriginalFileName = "invoice-with-table.pdf",
+            StoredFilePath = "2026/07/invoice-with-table.pdf",
+            ContentType = "application/pdf",
+            FileSizeBytes = 1024,
+            Status = DocumentStatus.Processed,
+            DocumentType = DocumentType.Invoice,
+            TablesJson = JsonSerializer.Serialize(new List<OcrTable>
+            {
+                new()
+                {
+                    RowCount = 2,
+                    ColumnCount = 3,
+                    Cells =
+                    [
+                        new() { RowIndex = 0, ColumnIndex = 0, Text = "ITEMS", Kind = "columnHeader" },
+                        new() { RowIndex = 0, ColumnIndex = 1, Text = "QUANTITY", Kind = "columnHeader" },
+                        new() { RowIndex = 0, ColumnIndex = 2, Text = "PRICE", Kind = "columnHeader" },
+                        new() { RowIndex = 1, ColumnIndex = 0, Text = "Widget" },
+                        new() { RowIndex = 1, ColumnIndex = 1, Text = "2" },
+                        new() { RowIndex = 1, ColumnIndex = 2, Text = "10.00" }
+                    ]
+                }
+            })
+        };
+
+        db.Organizations.Add(organization);
+        db.Documents.Add(document);
+        await db.SaveChangesAsync();
+
+        var sut = new ClosedXmlExportService(db, new DocumentProfileCatalog(), new ReviewTableBuilder());
+        var bytes = await sut.ExportAsync([document.Id]);
+
+        using var workbook = new XLWorkbook(new MemoryStream(bytes));
+        Assert.Contains(workbook.Worksheets, sheet => sheet.Name == "Tables");
+
+        var sheet = workbook.Worksheet("Tables");
+        Assert.Equal("invoice-with-table.pdf", sheet.Cell(2, 1).GetString());
+        Assert.Equal("table-0", sheet.Cell(2, 2).GetString());
+        // Row 2 is the header row (row index 0) — its cells hold the raw column labels.
+        Assert.Equal("ITEMS", sheet.Cell(2, 5).GetString());
+        Assert.Equal("Widget", sheet.Cell(3, 5).GetString());
+    }
+
+    [Fact]
+    public async Task ExportAsync_DocumentWithNoTables_DoesNotFailAndTablesSheetHasNoRows()
+    {
+        await using var db = CreateDbContext();
+        var (firstDocument, secondDocument) = await SeedDocumentsAsync(db);
+        var sut = new ClosedXmlExportService(db, new DocumentProfileCatalog(), new ReviewTableBuilder());
+
+        var bytes = await sut.ExportAsync([firstDocument.Id, secondDocument.Id]);
+
+        using var workbook = new XLWorkbook(new MemoryStream(bytes));
+        var sheet = workbook.Worksheet("Tables");
+        // Neither seeded document has TablesJson set — only the header row should exist.
+        Assert.Equal(1, sheet.LastRowUsed()?.RowNumber() ?? 1);
     }
 
     private static ApplicationDbContext CreateDbContext()
