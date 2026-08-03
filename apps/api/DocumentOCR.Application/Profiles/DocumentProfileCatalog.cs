@@ -2,7 +2,7 @@ using DocumentOCR.Application.Interfaces;
 using DocumentOCR.Application.Models;
 using DocumentOCR.Domain.Enums;
 
-namespace DocumentOCR.Infrastructure.Profiles;
+namespace DocumentOCR.Application.Profiles;
 
 /// <summary>
 /// Static, in-code catalog of the 5 document review profiles. No DB/config-driven profile

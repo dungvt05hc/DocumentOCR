@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
-using DocumentOCR.Infrastructure.Processing;
+using DocumentOCR.Application.Processing;
 
 namespace DocumentOCR.OcrBenchmark;
 

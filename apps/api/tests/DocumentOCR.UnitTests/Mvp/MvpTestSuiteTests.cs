@@ -5,8 +5,8 @@ using DocumentOCR.Domain.Enums;
 using DocumentOCR.Infrastructure.Export;
 using DocumentOCR.Infrastructure.Ocr;
 using DocumentOCR.Infrastructure.Persistence;
-using DocumentOCR.Infrastructure.Processing;
-using DocumentOCR.Infrastructure.Profiles;
+using DocumentOCR.Application.Processing;
+using DocumentOCR.Application.Profiles;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
 

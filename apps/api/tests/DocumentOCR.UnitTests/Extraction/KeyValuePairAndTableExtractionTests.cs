@@ -1,6 +1,6 @@
 using DocumentOCR.Application.Models;
 using DocumentOCR.Domain.Enums;
-using DocumentOCR.Infrastructure.Processing;
+using DocumentOCR.Application.Processing;
 using Xunit;
 
 namespace DocumentOCR.UnitTests.Extraction;
@@ -64,6 +64,33 @@ public class KeyValuePairAndTableExtractionTests
         var fields = _sut.Extract(DocumentId, ocr);
 
         AssertField(fields, FieldName.TotalAmount, "85.000");
+    }
+
+    [Fact]
+    public void Extract_TotalInWordsKeyValuePair_DoesNotOverrideNumericTotalLine()
+    {
+        // Regression: Azure layout parsed "Total in words: seven hundred and thirty-four point
+        // three three" as a KeyValuePair. Its key contains the bare "total" keyword, so it used
+        // to be misclassified as TotalAmount with the spelled-out text as the raw value — even
+        // though the real "TOTAL : 734.33 EUR" line was also present.
+        var lines = new[] { "TOTAL : 734.33 EUR" };
+        var ocr = OcrFromLines(lines) with
+        {
+            KeyValuePairs =
+            [
+                new()
+                {
+                    KeyText = "Total in words",
+                    ValueText = "seven hundred and thirty-four point three three",
+                    Confidence = 0.9,
+                    PageNumber = 1
+                }
+            ]
+        };
+
+        var fields = _sut.Extract(DocumentId, ocr);
+
+        AssertField(fields, FieldName.TotalAmount, "734.33");
     }
 
     [Fact]

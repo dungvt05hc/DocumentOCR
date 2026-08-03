@@ -28,8 +28,8 @@ Full stack: `docker-compose up --build` (Postgres, API :5000, web :3000)
 Clean Architecture monolith under `apps/api/`:
 
 - **Domain** — entities + enums only. No EF Core, Azure SDK, IO.
-- **Application** — use cases, DTOs, interfaces (`IDocumentOcrProvider`, `IDocumentStorageService`, …). Orchestration in `DocumentService` / `ExportService`.
-- **Infrastructure** — all concrete impls: EF Core/Npgsql, OCR providers, processing pipeline, ClosedXML export, Hangfire job. DI wiring in `DependencyInjection.cs`.
+- **Application** — use cases, DTOs, interfaces (`IDocumentOcrProvider`, `IDocumentStorageService`, …), and the pure OCR-pipeline business logic that has no infrastructure dependency: `Processing/FieldExtractionService`, `Processing/FieldNormalizationService`, `Processing/FieldValidationService`, `Processing/ReviewTableBuilder`, `Profiles/DocumentProfileCatalog`. Orchestration in `DocumentService` / `ExportService`.
+- **Infrastructure** — concrete impls with a real infrastructure dependency: EF Core/Npgsql, OCR providers, `DocumentProcessingService` (uses `IApplicationDbContext` + `IDocumentStorageService` to drive the pipeline), ClosedXML export, Hangfire job. DI wiring in `DependencyInjection.cs`.
 - **WebApi** — thin controllers, `GlobalExceptionMiddleware`, rate limiting, CORS, Hangfire dashboard.
 
 Hard rules:

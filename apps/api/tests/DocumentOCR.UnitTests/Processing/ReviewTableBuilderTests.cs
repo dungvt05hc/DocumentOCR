@@ -1,5 +1,5 @@
 using DocumentOCR.Application.Models;
-using DocumentOCR.Infrastructure.Processing;
+using DocumentOCR.Application.Processing;
 using Xunit;
 
 namespace DocumentOCR.UnitTests.Processing;

@@ -5,7 +5,7 @@ using DocumentOCR.Application.Models;
 using DocumentOCR.Domain.Entities;
 using DocumentOCR.Domain.Enums;
 
-namespace DocumentOCR.Infrastructure.Processing;
+namespace DocumentOCR.Application.Processing;
 
 public partial class FieldValidationService : IFieldValidationService
 {

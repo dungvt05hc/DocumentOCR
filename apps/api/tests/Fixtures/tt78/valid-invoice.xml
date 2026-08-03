@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<HDon>
+  <DLHDon Id="data">
+    <TTChung>
+      <PBan>2.0.0</PBan>
+      <KHMSHDon>1</KHMSHDon>
+      <KHHDon>C25TAA</KHHDon>
+      <SHDon>00001234</SHDon>
+      <NLap>2026-07-15</NLap>
+      <DVTTe>VND</DVTTe>
+    </TTChung>
+    <NDHDon>
+      <NBan>
+        <Ten>CÔNG TY TNHH ABC</Ten>
+        <MST>0100109106</MST>
+      </NBan>
+      <NMua>
+        <Ten>CÔNG TY TNHH XYZ</Ten>
+        <MST>0109876543</MST>
+      </NMua>
+      <TToan>
+        <TgTCThue>1124334</TgTCThue>
+        <TgTThue>112433</TgTThue>
+        <TgTTTBSo>1236767</TgTTTBSo>
+      </TToan>
+    </NDHDon>
+  </DLHDon>
+</HDon>

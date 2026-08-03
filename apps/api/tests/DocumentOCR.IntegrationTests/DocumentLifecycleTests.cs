@@ -130,6 +130,73 @@ public class DocumentLifecycleTests : IClassFixture<CustomWebApplicationFactory>
     }
 
     [Fact]
+    public async Task UploadProcessReview_Tt78XmlInvoice_SkipsOcrAndExtractsFieldsFromXml()
+    {
+        var client = _factory.CreateClient();
+
+        // ── 1. Upload ────────────────────────────────────────────────────────────
+        var xmlBytes = await File.ReadAllBytesAsync(
+            Path.Combine(AppContext.BaseDirectory, "Fixtures", "tt78", "valid-invoice.xml"));
+
+        using var uploadContent = new MultipartFormDataContent();
+        var fileContent = new ByteArrayContent(xmlBytes);
+        fileContent.Headers.ContentType = new MediaTypeHeaderValue("text/xml");
+        uploadContent.Add(fileContent, "files", "invoice.xml");
+
+        var uploadResponse = await client.PostAsync("/api/documents/upload", uploadContent);
+
+        Assert.Equal(HttpStatusCode.Accepted, uploadResponse.StatusCode);
+        var uploadResults = await uploadResponse.Content.ReadFromJsonAsync<List<UploadFileResult>>(JsonOptions);
+        var uploadResult = Assert.Single(uploadResults!);
+        Assert.True(uploadResult.Success, uploadResult.Error);
+        var documentId = uploadResult.Document!.Id;
+
+        // ── 2. Process — drives the real DI-resolved pipeline, including the real
+        // IStructuredInvoiceParser (TT78XmlInvoiceParser), same as a real Hangfire worker would.
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var job = scope.ServiceProvider.GetRequiredService<DocumentProcessingJob>();
+            await job.ProcessDocumentAsync(documentId);
+        }
+
+        // ── 3. Processed via the structured XML parser, not OCR ─────────────────
+        var afterProcessing = await client.GetFromJsonAsync<DocumentDetailDto>($"/api/documents/{documentId}", JsonOptions);
+        Assert.NotNull(afterProcessing);
+        Assert.Equal(DocumentStatus.Processed, afterProcessing!.Status);
+        Assert.Equal(1, afterProcessing.PageCount);
+        Assert.NotNull(afterProcessing.OcrLog);
+        Assert.Equal("TT78Xml", afterProcessing.OcrLog!.ProviderName);
+
+        AssertField(afterProcessing.Fields, FieldName.InvoiceNumber, "00001234");
+        AssertField(afterProcessing.Fields, FieldName.SupplierTaxCode, "0100109106");
+        AssertField(afterProcessing.Fields, FieldName.TotalAmount, "1236767");
+        Assert.All(afterProcessing.Fields, f => Assert.Equal(1.0, f.Confidence));
+
+        // ── 4. Review response resolves a full section/field breakdown ──────────
+        var reviewResponse = await client.GetAsync($"/api/documents/{documentId}/review");
+        Assert.Equal(HttpStatusCode.OK, reviewResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task Upload_XmlFileWithInvalidContent_IsRejected()
+    {
+        var client = _factory.CreateClient();
+
+        using var uploadContent = new MultipartFormDataContent();
+        var fileContent = new ByteArrayContent("this is not xml at all"u8.ToArray());
+        fileContent.Headers.ContentType = new MediaTypeHeaderValue("text/xml");
+        uploadContent.Add(fileContent, "files", "invoice.xml");
+
+        var uploadResponse = await client.PostAsync("/api/documents/upload", uploadContent);
+
+        Assert.Equal(HttpStatusCode.Accepted, uploadResponse.StatusCode);
+        var uploadResults = await uploadResponse.Content.ReadFromJsonAsync<List<UploadFileResult>>(JsonOptions);
+        var uploadResult = Assert.Single(uploadResults!);
+        Assert.False(uploadResult.Success);
+        Assert.False(string.IsNullOrWhiteSpace(uploadResult.Error));
+    }
+
+    [Fact]
     public async Task GetById_UnknownDocument_ReturnsNotFound()
     {
         var client = _factory.CreateClient();

@@ -5,7 +5,7 @@ using DocumentOCR.Application.Interfaces;
 using DocumentOCR.Domain.Entities;
 using DocumentOCR.Domain.Enums;
 
-namespace DocumentOCR.Infrastructure.Processing;
+namespace DocumentOCR.Application.Processing;
 
 /// <summary>
 /// Normalizes field values for Vietnamese invoices and receipts.

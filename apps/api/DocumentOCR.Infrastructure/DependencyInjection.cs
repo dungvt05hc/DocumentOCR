@@ -1,11 +1,12 @@
 using DocumentOCR.Application.Interfaces;
+using DocumentOCR.Application.Processing;
+using DocumentOCR.Application.Profiles;
 using DocumentOCR.Application.Services;
 using DocumentOCR.Infrastructure.Export;
 using DocumentOCR.Infrastructure.Jobs;
 using DocumentOCR.Infrastructure.Ocr;
 using DocumentOCR.Infrastructure.Persistence;
 using DocumentOCR.Infrastructure.Processing;
-using DocumentOCR.Infrastructure.Profiles;
 using DocumentOCR.Infrastructure.Storage;
 using Hangfire;
 using Hangfire.PostgreSql;
@@ -76,6 +77,9 @@ public static class DependencyInjection
         services.AddScoped<IFieldNormalizationService, FieldNormalizationService>();
         services.AddScoped<IFieldValidationService, FieldValidationService>();
         services.AddScoped<IDocumentProcessingService, DocumentProcessingService>();
+
+        // Pure function over the uploaded stream, no per-request state — safe as a singleton.
+        services.AddSingleton<IStructuredInvoiceParser, TT78XmlInvoiceParser>();
 
         // Pure functions over already-loaded data, no per-request state — safe as a singleton.
         services.AddSingleton<IReviewTableBuilder, ReviewTableBuilder>();

@@ -6,7 +6,7 @@ using DocumentOCR.Application.DTOs;
 using DocumentOCR.Application.Interfaces;
 using DocumentOCR.Application.Models;
 
-namespace DocumentOCR.Infrastructure.Processing;
+namespace DocumentOCR.Application.Processing;
 
 /// <summary>
 /// Turns the flat, provider-neutral <see cref="OcrTable"/> cell list into a header+rows shape

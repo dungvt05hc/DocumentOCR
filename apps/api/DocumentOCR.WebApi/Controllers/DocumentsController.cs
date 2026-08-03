@@ -1,3 +1,4 @@
+using System.Xml;
 using DocumentOCR.Application.DTOs;
 using DocumentOCR.Application.Services;
 using DocumentOCR.Domain.Common;
@@ -28,13 +29,16 @@ public class DocumentsController : ControllerBase
         {
             ["application/pdf"] = [".pdf"],
             ["image/jpeg"] = [".jpg", ".jpeg"],
-            ["image/png"] = [".png"]
+            ["image/png"] = [".png"],
+            ["text/xml"] = [".xml"],
+            ["application/xml"] = [".xml"]
         };
 
-    // Magic-byte signatures for the allowed content types. Client-supplied Content-Type
-    // and file extension are trivially spoofable, so we also verify the actual file bytes
-    // before persisting anything to storage.
-    private static readonly Dictionary<string, byte[]> SignatureByContentType =
+    // Magic-byte signatures for the binary content types. Client-supplied Content-Type and file
+    // extension are trivially spoofable, so we also verify the actual file bytes before
+    // persisting anything to storage. XML has no fixed magic bytes — see
+    // ValidateXmlRootElementAsync for its own (content-type-specific) validation strategy.
+    private static readonly Dictionary<string, byte[]> MagicBytesByContentType =
         new(StringComparer.OrdinalIgnoreCase)
         {
             ["application/pdf"] = [0x25, 0x50, 0x44, 0x46], // %PDF
@@ -42,7 +46,9 @@ public class DocumentsController : ControllerBase
             ["image/png"] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
         };
 
-    private const long MaxFileSizeBytes = 20 * 1024 * 1024; // 20 MB
+    private const long MaxFileSizeBytes = 20 * 1024 * 1024; // 20 MB (PDF/JPG/PNG)
+    private const long MaxXmlFileSizeBytes = 5 * 1024 * 1024; // 5 MB (structured TT78 XML invoices)
+    private const int XmlValidationPeekBytes = 64 * 1024; // only peek at the start — never load the whole file to validate
 
     public DocumentsController(
         DocumentService documentService,
@@ -210,16 +216,27 @@ public class DocumentsController : ControllerBase
         return File(stream, contentType);
     }
 
+    private static bool IsXmlContentType(string contentType) =>
+        string.Equals(contentType, "text/xml", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(contentType, "application/xml", StringComparison.OrdinalIgnoreCase);
+
+    private static long GetMaxFileSizeBytes(string contentType) =>
+        IsXmlContentType(contentType) ? MaxXmlFileSizeBytes : MaxFileSizeBytes;
+
     private static string? ValidateUpload(IFormFile file)
     {
         if (file.Length == 0)
             return "File is empty.";
 
-        if (file.Length > MaxFileSizeBytes)
-            return "File exceeds the 20 MB limit.";
+        if (file.Length > GetMaxFileSizeBytes(file.ContentType))
+        {
+            return IsXmlContentType(file.ContentType)
+                ? "File exceeds the 5 MB limit for XML invoices."
+                : "File exceeds the 20 MB limit.";
+        }
 
         if (!AllowedExtensionsByContentType.TryGetValue(file.ContentType, out var allowedExtensions))
-            return $"File type '{file.ContentType}' is not supported. Allowed: PDF, JPEG, PNG.";
+            return $"File type '{file.ContentType}' is not supported. Allowed: PDF, JPEG, PNG, XML.";
 
         var extension = Path.GetExtension(file.FileName);
         if (string.IsNullOrWhiteSpace(extension)
@@ -231,10 +248,20 @@ public class DocumentsController : ControllerBase
         return null;
     }
 
-    private static async Task<string?> ValidateFileSignatureAsync(IFormFile file, CancellationToken ct)
+    // Each supported content type gets its own validation strategy: magic bytes for the binary
+    // formats, and a bounded well-formedness/root-element check for XML (which has no fixed
+    // magic bytes). Dispatching explicitly here — instead of indexing a single shared map —
+    // avoids a KeyNotFoundException for any content type that doesn't have magic bytes.
+    private static async Task<string?> ValidateFileSignatureAsync(IFormFile file, CancellationToken ct) =>
+        IsXmlContentType(file.ContentType)
+            ? await ValidateXmlRootElementAsync(file, ct)
+            : await ValidateMagicBytesAsync(file, ct);
+
+    private static async Task<string?> ValidateMagicBytesAsync(IFormFile file, CancellationToken ct)
     {
-        // ValidateUpload already guarantees file.ContentType is a key in this map.
-        var signature = SignatureByContentType[file.ContentType];
+        // ValidateUpload already guarantees file.ContentType is a key in this map for every
+        // non-XML content type it allows.
+        var signature = MagicBytesByContentType[file.ContentType];
 
         var header = new byte[signature.Length];
         await using var stream = file.OpenReadStream();
@@ -242,6 +269,42 @@ public class DocumentsController : ControllerBase
 
         if (bytesRead < signature.Length || !header.AsSpan(0, signature.Length).SequenceEqual(signature))
             return $"File does not match the expected format for '{file.ContentType}'.";
+
+        return null;
+    }
+
+    private static async Task<string?> ValidateXmlRootElementAsync(IFormFile file, CancellationToken ct)
+    {
+        var buffer = new byte[XmlValidationPeekBytes];
+        await using var stream = file.OpenReadStream();
+        var bytesRead = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), ct);
+
+        if (bytesRead == 0)
+            return "File does not contain valid XML content.";
+
+        // Never resolve DTDs/external entities on user-supplied XML (XXE protection).
+        var readerSettings = new XmlReaderSettings
+        {
+            DtdProcessing = DtdProcessing.Prohibit,
+            XmlResolver = null,
+            Async = true
+        };
+
+        try
+        {
+            using var peekStream = new MemoryStream(buffer, 0, bytesRead);
+            using var reader = XmlReader.Create(peekStream, readerSettings);
+
+            // The buffer is deliberately truncated at XmlValidationPeekBytes, so the document
+            // does not need to be well-formed to its closing tag — MoveToContentAsync only needs
+            // to reach the first real node before EOF to confirm a genuine root element exists.
+            if (await reader.MoveToContentAsync() != XmlNodeType.Element)
+                return "File does not contain a valid XML root element.";
+        }
+        catch (XmlException)
+        {
+            return "File does not contain valid XML content.";
+        }
 
         return null;
     }

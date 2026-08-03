@@ -465,3 +465,78 @@ multi-row items, structured accounting-system export) becomes a product requirem
 materially larger effort than this candidate builder and was explicitly deferred (see "No line-item
 (per-product) extraction yet" above). Also revisit the JSON-column choice if table data needs to be
 queried/filtered at the database level rather than always loaded whole per document.
+
+---
+
+## 2026-08-03 — TT78 XML e-invoices are parsed directly, bypassing OCR entirely
+
+**Decision:**
+When an uploaded file is a Vietnamese TT78 (Thông tư 78/2021/TT-BTC) e-invoice XML, skip
+`IDocumentOcrProvider` and `FieldExtractionService` entirely and parse the XML directly into
+`ExtractedField`s via a new `IStructuredInvoiceParser` (`TT78XmlInvoiceParser`,
+`DocumentOCR.Application.Processing`). The branch lives in `DocumentProcessingService.ProcessAsync`
+(`_structuredInvoiceParser.CanParse(...)` checked before building the OCR `DocumentInput`), **not**
+as an `IDocumentOcrProvider` implementation.
+
+**Reason:**
+A TT78 e-invoice is already a structured, schema-defined XML document — running OCR and heuristic
+field-guessing (`FieldExtractionService`) on it would be strictly worse than reading the tags
+directly: slower, costs money against the configured OCR provider, and less accurate than a direct
+read. `IDocumentOcrProvider` returns a `NormalizedOcrDocument` that downstream extraction has to
+*guess* fields from; that guessing step is exactly what XML doesn't need, so putting the seam inside
+`IDocumentOcrProvider` would force the pipeline through a lossy layer it doesn't require. The seam
+belongs one level up, where `DocumentProcessingService` already decides how to turn a stored file
+into `ExtractedField`s.
+
+**Impact:**
+- `IStructuredInvoiceParser`/`StructuredInvoiceResult` live in `DocumentOCR.Application`
+  (`Interfaces`/`Models`) alongside `IDocumentOcrProvider`; `TT78XmlInvoiceParser` lives in
+  `Application/Processing`, next to `FieldExtractionService`/`FieldNormalizationService`, using only
+  `System.Xml.Linq` — no new NuGet dependency.
+- `DocumentProcessingService.ProcessAsync` now branches into `ProcessViaOcrAsync` (unchanged OCR
+  body, extracted verbatim into its own method) or `ProcessStructuredInvoiceAsync`. The XML path
+  still runs `FieldNormalizationService.NormalizeFields` and `FieldValidationService.Validate` — the
+  parser only supplies raw field values, all money/date/tax-code normalization and warning
+  generation stays shared with the OCR path.
+- An `OcrProviderLog` row is still written for every XML document (`ProviderName = "TT78Xml"`,
+  `EstimatedCost = 0`, `PageCount = 1`) so cost/audit reporting doesn't need an XML-specific
+  branch. Unlike the OCR path, no `DocumentPage` rows are created (XML has no page concept).
+- `DocumentsController` accepts `text/xml`/`application/xml` uploads (`.xml` extension, 5 MB limit —
+  tighter than the 20 MB PDF/JPG/PNG limit). Because XML has no fixed magic bytes, file-signature
+  validation was refactored from a single `Dictionary<contentType, byte[]>` indexer (which would
+  throw `KeyNotFoundException` for a content type with no magic-byte entry) into an explicit
+  per-content-type dispatch: magic bytes for PDF/JPG/PNG, a bounded (64 KB peek, never the whole
+  file) well-formedness + root-element check for XML. Both the upload-time peek and the parser's
+  full read use `XmlReaderSettings { DtdProcessing = Prohibit, XmlResolver = null }` — XXE
+  protection against a file type sourced entirely from user upload.
+- TT78 XML is always treated as `DocumentType.VatInvoice` — `TT78XmlInvoiceParser` synthesizes a
+  `FieldName.DocumentType` field (not read from any XML tag) so
+  `DocumentProcessingService.GetDetectedDocumentType` (unchanged) resolves the VAT-invoice
+  `DocumentProfile` instead of falling back to `Unknown`.
+- **Assumed XML structure** (no official XSD is checked into this repo): `HDon > DLHDon >
+  (TTChung | NDHDon > (NBan | NMua | TToan))`, with `SHDon`/`KHMSHDon`/`KHHDon`/`NLap`/`DVTTe` as
+  direct children of `TTChung`, `MST`/`Ten` as direct children of `NDHDon/NBan` (not `NMua`, the
+  buyer), and `TgTCThue`/`TgTThue`/`TgTTTBSo` as direct children of `NDHDon/TToan`. A file wrapped in
+  a digital-signature envelope may carry `DLHDon` alongside a sibling `Signature` (XML-DSig) block;
+  the parser locates `DLHDon` by local name anywhere in the tree but explicitly excludes any match
+  nested under a `Signature` ancestor. Element lookups match by `XName.LocalName` only (namespace/
+  prefix-agnostic) for the same reason. If a real TT78 sample differs from this assumed shape, only
+  `TT78XmlInvoiceParser` needs to change — the rest of the pipeline (normalization, validation,
+  review, export) is schema-agnostic.
+- `KHMSHDon`+`KHHDon` (invoice template code + serial) have no dedicated `FieldName` enum value; they
+  are combined into a human-readable string on the existing `FieldName.Notes` field, and also
+  surfaced raw on `StructuredInvoiceResult.InvoiceTemplateCode`/`InvoiceSerial` for any future
+  caller that wants them unformatted.
+- Frontend (`UploadZone.tsx`, `FieldEditor` file-preview panel) was not updated to accept or render
+  `.xml` — out of scope for this change; the backend API accepts XML uploads correctly, but the
+  existing UI's client-side file-type filter still blocks them and the preview panel has no XML
+  renderer.
+
+**Revisit when:**
+A real TT78 XML sample (or the official Tổng cục Thuế XSD) becomes available and its structure
+differs from the assumed shape above — update `TT78XmlInvoiceParser` only. Also revisit if a second
+structured-format source (e.g. a different country's e-invoice standard) is needed:
+`IStructuredInvoiceParser` currently has exactly one registered implementation
+(`TT78XmlInvoiceParser`, singleton in `Infrastructure/DependencyInjection.cs`); supporting multiple
+would need `DocumentProcessingService` to resolve from `IEnumerable<IStructuredInvoiceParser>`
+instead of a single injected instance.

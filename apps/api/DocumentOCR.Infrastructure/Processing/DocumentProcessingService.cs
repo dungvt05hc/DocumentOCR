@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using DocumentOCR.Application.Interfaces;
@@ -12,16 +13,20 @@ using Microsoft.Extensions.Options;
 namespace DocumentOCR.Infrastructure.Processing;
 
 /// <summary>
-/// Orchestrates the full OCR pipeline for a single document.
+/// Orchestrates the full document processing pipeline: structured-format fast path (e.g. TT78
+/// invoice XML) when available, OCR pipeline otherwise.
 /// </summary>
 public class DocumentProcessingService : IDocumentProcessingService
 {
+    private const string StructuredInvoiceProviderName = "TT78Xml";
+
     private readonly IApplicationDbContext _db;
     private readonly IDocumentStorageService _storage;
     private readonly IDocumentOcrProvider _ocrProvider;
     private readonly IFieldExtractionService _extraction;
     private readonly IFieldNormalizationService _normalization;
     private readonly IFieldValidationService _validation;
+    private readonly IStructuredInvoiceParser _structuredInvoiceParser;
     private readonly OcrOptions _ocrOptions;
     private readonly ILogger<DocumentProcessingService> _logger;
 
@@ -32,6 +37,7 @@ public class DocumentProcessingService : IDocumentProcessingService
         IFieldExtractionService extraction,
         IFieldNormalizationService normalization,
         IFieldValidationService validation,
+        IStructuredInvoiceParser structuredInvoiceParser,
         IOptions<OcrOptions> ocrOptions,
         ILogger<DocumentProcessingService> logger)
     {
@@ -41,6 +47,7 @@ public class DocumentProcessingService : IDocumentProcessingService
         _extraction = extraction;
         _normalization = normalization;
         _validation = validation;
+        _structuredInvoiceParser = structuredInvoiceParser;
         _ocrOptions = ocrOptions.Value;
         _logger = logger;
     }
@@ -83,113 +90,11 @@ public class DocumentProcessingService : IDocumentProcessingService
                 document.StoredFilePath);
 
             await using var fileStream = await _storage.GetStreamAsync(document.StoredFilePath, ct);
-            var ocrInput = new DocumentInput
-            {
-                Content = fileStream,
-                FileName = document.OriginalFileName,
-                ContentType = document.ContentType,
-                FileSizeBytes = document.FileSizeBytes
-            };
 
-            _logger.LogInformation(
-                "Calling OCR provider {ProviderName} for document {DocumentId}",
-                _ocrProvider.ProviderName,
-                documentId);
-
-            var ocrResult = await _ocrProvider.AnalyzeAsync(ocrInput, ct);
-
-            _logger.LogInformation(
-                "OCR provider {ProviderName} (Model={ModelId}) completed for document {DocumentId}. Success={Success}, Pages={PageCount}, DurationMs={ProcessingTimeMs}, EstimatedCost={EstimatedCost}",
-                _ocrProvider.ProviderName,
-                ocrResult.ModelId,
-                documentId,
-                ocrResult.Success,
-                ocrResult.PageCount,
-                ocrResult.ProcessingTimeMs,
-                ocrResult.EstimatedCost);
-
-            ocrResult = await PersistOcrArtifactsAsync(documentId, ocrResult, ct);
-
-            _db.OcrProviderLogs.Add(new OcrProviderLog
-            {
-                DocumentId = documentId,
-                ProviderName = _ocrProvider.ProviderName,
-                ModelId = ocrResult.ModelId,
-                PageCount = ocrResult.PageCount,
-                ProcessingTimeMs = ocrResult.ProcessingTimeMs,
-                EstimatedCost = ocrResult.EstimatedCost,
-                Success = ocrResult.Success,
-                ErrorMessage = ocrResult.ErrorMessage,
-                RawResponseJson = _ocrOptions.StoreRawProviderResponse ? ocrResult.RawProviderResponseJson : null,
-                RawResponsePath = ocrResult.RawProviderResponsePath,
-                NormalizedResultPath = ocrResult.NormalizedOcrResultPath
-            });
-
-            if (!ocrResult.Success)
-            {
-                document.Status = DocumentStatus.Failed;
-                document.ErrorMessage = string.IsNullOrWhiteSpace(ocrResult.ErrorMessage)
-                    ? "OCR provider failed without an error message."
-                    : ocrResult.ErrorMessage;
-                document.ProcessingCompletedAt = DateTime.UtcNow;
-                document.UpdatedAt = DateTime.UtcNow;
-
-                await _db.SaveChangesAsync(ct);
-
-                _logger.LogWarning(
-                    "Document {DocumentId} marked Failed because OCR provider {ProviderName} returned an unsuccessful result: {ErrorMessage}",
-                    documentId,
-                    _ocrProvider.ProviderName,
-                    document.ErrorMessage);
-
-                return;
-            }
-
-            foreach (var page in ocrResult.Pages)
-            {
-                _db.DocumentPages.Add(new DocumentPage
-                {
-                    DocumentId = documentId,
-                    PageNumber = page.PageNumber,
-                    RawText = page.FullText
-                });
-            }
-
-            document.TablesJson = ocrResult.Tables.Count > 0
-                ? JsonSerializer.Serialize(ocrResult.Tables)
-                : null;
-
-            var extractedFields = _extraction.Extract(documentId, ocrResult);
-            _logger.LogInformation(
-                "Extracted {FieldCount} fields for document {DocumentId}",
-                extractedFields.Count,
-                documentId);
-
-            _normalization.NormalizeFields(extractedFields);
-
-            foreach (var field in extractedFields)
-                _db.ExtractedFields.Add(field);
-
-            var warnings = _validation.Validate(documentId, extractedFields);
-            foreach (var warning in warnings)
-                _db.ValidationWarnings.Add(warning);
-
-            document.DocumentType = GetDetectedDocumentType(extractedFields);
-            document.Status = DocumentStatus.Processed;
-            document.PageCount = ocrResult.PageCount;
-            document.ProcessingCompletedAt = DateTime.UtcNow;
-            document.UpdatedAt = DateTime.UtcNow;
-
-            await _db.SaveChangesAsync(ct);
-
-            _logger.LogInformation(
-                "Document {DocumentId} processed successfully. Status={Status}, DocumentType={DocumentType}, Pages={PageCount}, Fields={FieldCount}, Warnings={WarningCount}",
-                documentId,
-                document.Status,
-                document.DocumentType,
-                document.PageCount,
-                extractedFields.Count,
-                warnings.Count);
+            if (_structuredInvoiceParser.CanParse(document.ContentType, document.OriginalFileName))
+                await ProcessStructuredInvoiceAsync(document, fileStream, ct);
+            else
+                await ProcessViaOcrAsync(document, fileStream, ct);
         }
         catch (Exception ex)
         {
@@ -209,6 +114,209 @@ public class DocumentProcessingService : IDocumentProcessingService
                 _logger.LogError(saveEx, "Failed to save failure status for document {DocumentId}", documentId);
             }
         }
+    }
+
+    private async Task ProcessViaOcrAsync(Document document, Stream fileStream, CancellationToken ct)
+    {
+        var documentId = document.Id;
+
+        var ocrInput = new DocumentInput
+        {
+            Content = fileStream,
+            FileName = document.OriginalFileName,
+            ContentType = document.ContentType,
+            FileSizeBytes = document.FileSizeBytes
+        };
+
+        _logger.LogInformation(
+            "Calling OCR provider {ProviderName} for document {DocumentId}",
+            _ocrProvider.ProviderName,
+            documentId);
+
+        var ocrResult = await _ocrProvider.AnalyzeAsync(ocrInput, ct);
+
+        _logger.LogInformation(
+            "OCR provider {ProviderName} (Model={ModelId}) completed for document {DocumentId}. Success={Success}, Pages={PageCount}, DurationMs={ProcessingTimeMs}, EstimatedCost={EstimatedCost}",
+            _ocrProvider.ProviderName,
+            ocrResult.ModelId,
+            documentId,
+            ocrResult.Success,
+            ocrResult.PageCount,
+            ocrResult.ProcessingTimeMs,
+            ocrResult.EstimatedCost);
+
+        ocrResult = await PersistOcrArtifactsAsync(documentId, ocrResult, ct);
+
+        _db.OcrProviderLogs.Add(new OcrProviderLog
+        {
+            DocumentId = documentId,
+            ProviderName = _ocrProvider.ProviderName,
+            ModelId = ocrResult.ModelId,
+            PageCount = ocrResult.PageCount,
+            ProcessingTimeMs = ocrResult.ProcessingTimeMs,
+            EstimatedCost = ocrResult.EstimatedCost,
+            Success = ocrResult.Success,
+            ErrorMessage = ocrResult.ErrorMessage,
+            RawResponseJson = _ocrOptions.StoreRawProviderResponse ? ocrResult.RawProviderResponseJson : null,
+            RawResponsePath = ocrResult.RawProviderResponsePath,
+            NormalizedResultPath = ocrResult.NormalizedOcrResultPath
+        });
+
+        if (!ocrResult.Success)
+        {
+            document.Status = DocumentStatus.Failed;
+            document.ErrorMessage = string.IsNullOrWhiteSpace(ocrResult.ErrorMessage)
+                ? "OCR provider failed without an error message."
+                : ocrResult.ErrorMessage;
+            document.ProcessingCompletedAt = DateTime.UtcNow;
+            document.UpdatedAt = DateTime.UtcNow;
+
+            await _db.SaveChangesAsync(ct);
+
+            _logger.LogWarning(
+                "Document {DocumentId} marked Failed because OCR provider {ProviderName} returned an unsuccessful result: {ErrorMessage}",
+                documentId,
+                _ocrProvider.ProviderName,
+                document.ErrorMessage);
+
+            return;
+        }
+
+        foreach (var page in ocrResult.Pages)
+        {
+            _db.DocumentPages.Add(new DocumentPage
+            {
+                DocumentId = documentId,
+                PageNumber = page.PageNumber,
+                RawText = page.FullText
+            });
+        }
+
+        document.TablesJson = ocrResult.Tables.Count > 0
+            ? JsonSerializer.Serialize(ocrResult.Tables)
+            : null;
+
+        var extractedFields = _extraction.Extract(documentId, ocrResult);
+        _logger.LogInformation(
+            "Extracted {FieldCount} fields for document {DocumentId}",
+            extractedFields.Count,
+            documentId);
+
+        _normalization.NormalizeFields(extractedFields);
+
+        foreach (var field in extractedFields)
+            _db.ExtractedFields.Add(field);
+
+        var warnings = _validation.Validate(documentId, extractedFields);
+        foreach (var warning in warnings)
+            _db.ValidationWarnings.Add(warning);
+
+        document.DocumentType = GetDetectedDocumentType(extractedFields);
+        document.Status = DocumentStatus.Processed;
+        document.PageCount = ocrResult.PageCount;
+        document.ProcessingCompletedAt = DateTime.UtcNow;
+        document.UpdatedAt = DateTime.UtcNow;
+
+        await _db.SaveChangesAsync(ct);
+
+        _logger.LogInformation(
+            "Document {DocumentId} processed successfully. Status={Status}, DocumentType={DocumentType}, Pages={PageCount}, Fields={FieldCount}, Warnings={WarningCount}",
+            documentId,
+            document.Status,
+            document.DocumentType,
+            document.PageCount,
+            extractedFields.Count,
+            warnings.Count);
+    }
+
+    private async Task ProcessStructuredInvoiceAsync(Document document, Stream fileStream, CancellationToken ct)
+    {
+        var documentId = document.Id;
+        var stopwatch = Stopwatch.StartNew();
+
+        _logger.LogInformation(
+            "Parsing structured invoice XML for document {DocumentId} via {ProviderName}",
+            documentId,
+            StructuredInvoiceProviderName);
+
+        var parseResult = await _structuredInvoiceParser.ParseAsync(fileStream, ct);
+        stopwatch.Stop();
+
+        var rawXmlPath = await PersistRawXmlArtifactAsync(documentId, parseResult.RawXml, ct);
+
+        _db.OcrProviderLogs.Add(new OcrProviderLog
+        {
+            DocumentId = documentId,
+            ProviderName = StructuredInvoiceProviderName,
+            ModelId = StructuredInvoiceProviderName,
+            PageCount = 1,
+            ProcessingTimeMs = stopwatch.Elapsed.TotalMilliseconds,
+            EstimatedCost = 0m,
+            Success = parseResult.Success,
+            ErrorMessage = parseResult.ErrorMessage,
+            RawResponseJson = _ocrOptions.StoreRawProviderResponse ? parseResult.RawXml : null,
+            RawResponsePath = rawXmlPath
+        });
+
+        if (!parseResult.Success)
+        {
+            document.Status = DocumentStatus.Failed;
+            document.ErrorMessage = string.IsNullOrWhiteSpace(parseResult.ErrorMessage)
+                ? "Structured invoice parser failed without an error message."
+                : parseResult.ErrorMessage;
+            document.ProcessingCompletedAt = DateTime.UtcNow;
+            document.UpdatedAt = DateTime.UtcNow;
+
+            await _db.SaveChangesAsync(ct);
+
+            _logger.LogWarning(
+                "Document {DocumentId} marked Failed because structured XML parsing failed: {ErrorMessage}",
+                documentId,
+                document.ErrorMessage);
+
+            return;
+        }
+
+        var extractedFields = parseResult.Fields;
+        foreach (var field in extractedFields)
+        {
+            field.DocumentId = documentId;
+            _db.ExtractedFields.Add(field);
+        }
+
+        _normalization.NormalizeFields(extractedFields);
+
+        var warnings = _validation.Validate(documentId, extractedFields);
+        foreach (var warning in warnings)
+            _db.ValidationWarnings.Add(warning);
+
+        // No OCR pages exist for a structured XML source, unlike the OCR pipeline which always
+        // produces at least one DocumentPage.
+        document.TablesJson = null;
+        document.DocumentType = GetDetectedDocumentType(extractedFields);
+        document.Status = DocumentStatus.Processed;
+        document.PageCount = 1;
+        document.ProcessingCompletedAt = DateTime.UtcNow;
+        document.UpdatedAt = DateTime.UtcNow;
+
+        await _db.SaveChangesAsync(ct);
+
+        _logger.LogInformation(
+            "Document {DocumentId} processed via structured XML parser. Status={Status}, DocumentType={DocumentType}, Fields={FieldCount}, Warnings={WarningCount}",
+            documentId,
+            document.Status,
+            document.DocumentType,
+            extractedFields.Count,
+            warnings.Count);
+    }
+
+    private async Task<string?> PersistRawXmlArtifactAsync(Guid documentId, string? rawXml, CancellationToken ct)
+    {
+        if (!_ocrOptions.StoreRawProviderResponse || string.IsNullOrWhiteSpace(rawXml))
+            return null;
+
+        using var stream = new MemoryStream(Encoding.UTF8.GetBytes(rawXml));
+        return await _storage.SaveAsync(stream, $"{documentId}-source.xml", "application/xml", ct);
     }
 
     private static readonly JsonSerializerOptions ArtifactJsonOptions = new()

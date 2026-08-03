@@ -3,8 +3,8 @@ using DocumentOCR.Application.Models;
 using DocumentOCR.Application.Services;
 using DocumentOCR.Domain.Entities;
 using DocumentOCR.Domain.Enums;
-using DocumentOCR.Infrastructure.Processing;
-using DocumentOCR.Infrastructure.Profiles;
+using DocumentOCR.Application.Processing;
+using DocumentOCR.Application.Profiles;
 using Xunit;
 
 namespace DocumentOCR.UnitTests.Mapping;

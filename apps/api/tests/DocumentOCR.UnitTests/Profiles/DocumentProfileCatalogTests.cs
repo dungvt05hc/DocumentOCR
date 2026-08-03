@@ -1,5 +1,5 @@
 using DocumentOCR.Domain.Enums;
-using DocumentOCR.Infrastructure.Profiles;
+using DocumentOCR.Application.Profiles;
 using Xunit;
 
 namespace DocumentOCR.UnitTests.Profiles;

@@ -1,6 +1,6 @@
 using DocumentOCR.Application.Models;
 using DocumentOCR.Domain.Enums;
-using DocumentOCR.Infrastructure.Processing;
+using DocumentOCR.Application.Processing;
 using Xunit;
 
 namespace DocumentOCR.UnitTests.Extraction;

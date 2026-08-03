@@ -7,7 +7,7 @@ using DocumentOCR.Application.Models;
 using DocumentOCR.Domain.Entities;
 using DocumentOCR.Domain.Enums;
 
-namespace DocumentOCR.Infrastructure.Processing;
+namespace DocumentOCR.Application.Processing;
 
 /// <summary>
 /// Extracts invoice and receipt fields from structured OCR candidates plus OCR text.
@@ -220,9 +220,14 @@ public partial class FieldExtractionService : IFieldExtractionService
                 var match = DateValuePattern().Match(kvp.ValueText).Value;
                 Add(nameof(FieldName.InvoiceDate), string.IsNullOrEmpty(match) ? kvp.ValueText : match);
             }
-            else if (GetAmountFieldName(keySearch) is { } amountField)
+            else if (!keySearch.Contains("in words", StringComparison.Ordinal)
+                     && GetAmountFieldName(keySearch) is { } amountField)
             {
-                Add(amountField, LastMoneyValue(kvp.ValueText) ?? kvp.ValueText);
+                // A spelled-out "total in words" value has no digits — LastMoneyValue correctly
+                // returns null for it, and that must not fall back to the raw text (previously
+                // `?? kvp.ValueText`), or a money field ends up holding a non-numeric string like
+                // "seven hundred and thirt-".
+                Add(amountField, LastMoneyValue(kvp.ValueText));
             }
             else if (ContainsAny(keySearch, InvoiceNumberKeywords))
             {

@@ -1,11 +1,12 @@
 using DocumentOCR.Application.Interfaces;
 using DocumentOCR.Application.Models;
+using DocumentOCR.Application.Processing;
+using DocumentOCR.Application.Profiles;
 using DocumentOCR.Domain.Entities;
 using DocumentOCR.Domain.Enums;
 using DocumentOCR.Infrastructure.Ocr;
 using DocumentOCR.Infrastructure.Persistence;
 using DocumentOCR.Infrastructure.Processing;
-using DocumentOCR.Infrastructure.Profiles;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -131,7 +132,8 @@ public class DocumentProcessingServiceTests
         ApplicationDbContext db,
         IDocumentOcrProvider ocrProvider,
         IDocumentStorageService storage,
-        OcrOptions? ocrOptions = null) =>
+        OcrOptions? ocrOptions = null,
+        IStructuredInvoiceParser? structuredInvoiceParser = null) =>
         new(
             db,
             storage,
@@ -139,6 +141,7 @@ public class DocumentProcessingServiceTests
             new FieldExtractionService(),
             new FieldNormalizationService(),
             new FieldValidationService(new DocumentProfileCatalog()),
+            structuredInvoiceParser ?? new NeverMatchingStructuredInvoiceParser(),
             Options.Create(ocrOptions ?? new OcrOptions()),
             NullLogger<DocumentProcessingService>.Instance);
 
@@ -279,5 +282,80 @@ public class DocumentProcessingServiceTests
 
         public Task<NormalizedOcrDocument> AnalyzeAsync(DocumentInput input, CancellationToken ct = default) =>
             throw new InvalidOperationException("Simulated OCR provider failure.");
+    }
+
+    // ── Structured (TT78 XML) invoice fast path ─────────────────────────────────────
+
+    [Fact]
+    public async Task ProcessAsync_XmlDocument_UsesStructuredParserAndNeverCallsOcrProvider()
+    {
+        await using var db = CreateDbContext();
+        var document = await SeedDocumentAsync(db, DocumentStatus.Uploaded, doc =>
+        {
+            doc.OriginalFileName = "invoice.xml";
+            doc.ContentType = "text/xml";
+        });
+        var ocrProvider = new RecordingOcrProvider();
+        var sut = CreateSut(
+            db,
+            ocrProvider,
+            new XmlFixtureDocumentStorageService(),
+            structuredInvoiceParser: new TT78XmlInvoiceParser());
+
+        await sut.ProcessAsync(document.Id);
+
+        Assert.Equal(0, ocrProvider.CallCount);
+
+        var reloaded = await db.Documents
+            .Include(d => d.Pages)
+            .Include(d => d.Fields)
+            .Include(d => d.OcrProviderLogs)
+            .SingleAsync(d => d.Id == document.Id);
+
+        Assert.Equal(DocumentStatus.Processed, reloaded.Status);
+        Assert.Equal(1, reloaded.PageCount);
+        Assert.Empty(reloaded.Pages);
+        Assert.Equal(DocumentType.VatInvoice, reloaded.DocumentType);
+        Assert.Contains(reloaded.Fields, f => f.FieldName == nameof(FieldName.InvoiceNumber) && f.RawValue == "00001234");
+        Assert.Contains(reloaded.Fields, f => f.FieldName == nameof(FieldName.TotalAmount) && f.NormalizedValue == "1236767");
+
+        var log = Assert.Single(reloaded.OcrProviderLogs);
+        Assert.Equal("TT78Xml", log.ProviderName);
+        Assert.Equal(0m, log.EstimatedCost);
+        Assert.True(log.Success);
+    }
+
+    private sealed class RecordingOcrProvider : IDocumentOcrProvider
+    {
+        public int CallCount { get; private set; }
+
+        public string ProviderName => "Recording";
+
+        public Task<NormalizedOcrDocument> AnalyzeAsync(DocumentInput input, CancellationToken ct = default)
+        {
+            CallCount++;
+            return Task.FromResult(new NormalizedOcrDocument { Success = true, ProviderName = ProviderName, PageCount = 1 });
+        }
+    }
+
+    private sealed class XmlFixtureDocumentStorageService : IDocumentStorageService
+    {
+        public Task<string> SaveAsync(Stream fileStream, string originalFileName, string contentType, CancellationToken ct = default) =>
+            Task.FromResult($"fake/{originalFileName}");
+
+        public Task<Stream> GetStreamAsync(string storedPath, CancellationToken ct = default) =>
+            Task.FromResult<Stream>(File.OpenRead(
+                Path.Combine(AppContext.BaseDirectory, "Fixtures", "tt78", "valid-invoice.xml")));
+
+        public Task DeleteAsync(string storedPath, CancellationToken ct = default) =>
+            throw new NotSupportedException("Not used by ProcessAsync.");
+    }
+
+    private sealed class NeverMatchingStructuredInvoiceParser : IStructuredInvoiceParser
+    {
+        public bool CanParse(string contentType, string fileName) => false;
+
+        public Task<StructuredInvoiceResult> ParseAsync(Stream content, CancellationToken ct = default) =>
+            throw new NotSupportedException("Should never be called when CanParse returns false.");
     }
 }

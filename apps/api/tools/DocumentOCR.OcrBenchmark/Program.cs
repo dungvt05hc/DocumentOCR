@@ -1,7 +1,7 @@
 using DocumentOCR.Application.Interfaces;
+using DocumentOCR.Application.Processing;
+using DocumentOCR.Application.Profiles;
 using DocumentOCR.Infrastructure.Ocr;
-using DocumentOCR.Infrastructure.Processing;
-using DocumentOCR.Infrastructure.Profiles;
 using DocumentOCR.OcrBenchmark;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
