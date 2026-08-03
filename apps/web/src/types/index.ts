@@ -22,8 +22,38 @@ export type FieldName =
 
 export type WarningSeverity = 'Info' | 'Warning' | 'High' | 'Error';
 
+export type ClientType = 'HouseholdBusiness' | 'Enterprise' | 'Individual';
+
+export interface ClientProfileDto {
+  id: string;
+  name: string;
+  taxCode: string | null;
+  clientType: ClientType;
+  address: string | null;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateClientProfileRequest {
+  name: string;
+  taxCode?: string | null;
+  clientType: ClientType;
+  address?: string | null;
+}
+
+export interface UpdateClientProfileRequest {
+  name: string;
+  taxCode?: string | null;
+  clientType: ClientType;
+  address?: string | null;
+  isActive: boolean;
+}
+
 export interface DocumentDto {
   id: string;
+  clientProfileId: string | null;
+  clientProfileName: string | null;
   originalFileName: string;
   contentType: string;
   fileSizeBytes: number;

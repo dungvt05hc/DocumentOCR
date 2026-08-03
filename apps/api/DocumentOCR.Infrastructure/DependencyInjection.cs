@@ -91,6 +91,8 @@ public static class DependencyInjection
         services.AddScoped<DocumentReviewMappingService>();
         services.AddScoped<DocumentService>();
         services.AddScoped<ExportService>();
+        services.AddScoped<ClientProfileService>();
+        services.AddScoped<IClientAutoSuggestService, ClientAutoSuggestService>();
 
         // ── Hangfire ─────────────────────────────────────────────────────────────
         services.AddHangfire(config =>

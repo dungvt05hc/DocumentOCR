@@ -134,12 +134,27 @@ public class DocumentsController : ControllerBase
         }
     }
 
-    // GET /api/documents
+    // GET /api/documents?clientProfileId=&from=&to=
     [HttpGet]
-    public async Task<IActionResult> GetAll(CancellationToken ct)
+    public async Task<IActionResult> GetAll(
+        [FromQuery] Guid? clientProfileId,
+        [FromQuery] DateOnly? from,
+        [FromQuery] DateOnly? to,
+        CancellationToken ct)
     {
-        var docs = await _documentService.GetAllAsync(DefaultOrganizationId, ct);
+        var docs = await _documentService.GetAllAsync(DefaultOrganizationId, clientProfileId, from, to, ct);
         return Ok(docs);
+    }
+
+    // PUT /api/documents/{id}/client — assign or unassign the client this document belongs to
+    [HttpPut("{id:guid}/client")]
+    public async Task<IActionResult> AssignClient(
+        Guid id,
+        [FromBody] AssignDocumentClientRequest request,
+        CancellationToken ct)
+    {
+        await _documentService.AssignClientAsync(id, DefaultOrganizationId, request.ClientProfileId, ct);
+        return NoContent();
     }
 
     // GET /api/documents/{id}

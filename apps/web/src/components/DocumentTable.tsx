@@ -38,6 +38,7 @@ export function DocumentTable({
           <tr>
             <th aria-label="Select for export" />
             <th>File name</th>
+            <th>Client</th>
             <th>Status</th>
             <th>Created</th>
             <th>Document type</th>
@@ -64,6 +65,7 @@ export function DocumentTable({
                   <div className="file-name">{doc.originalFileName}</div>
                   <div className="muted">{formatBytes(doc.fileSizeBytes)}</div>
                 </td>
+                <td>{doc.clientProfileName ?? '—'}</td>
                 <td>
                   <span className={statusClasses[doc.status]}>{doc.status}</span>
                 </td>

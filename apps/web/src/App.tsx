@@ -1,15 +1,28 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import './App.css';
+import { ClientsPanel } from './components/ClientsPanel';
 import { DocumentTable } from './components/DocumentTable';
 import { ExportPanel } from './components/ExportPanel';
 import { FieldEditor } from './components/FieldEditor';
 import { UploadZone } from './components/UploadZone';
-import { getDocumentReview, getDocuments, triggerProcessing } from './services/api';
-import type { DocumentDto, DocumentReviewResponse, DocumentStatus, UploadFileResult } from './types';
+import {
+  getClientProfiles,
+  getDocumentReview,
+  getDocuments,
+  triggerProcessing,
+} from './services/api';
+import type {
+  ClientProfileDto,
+  DocumentDto,
+  DocumentReviewResponse,
+  DocumentStatus,
+  UploadFileResult,
+} from './types';
 
-type Page = 'upload' | 'documents' | 'export';
+type Page = 'upload' | 'documents' | 'clients' | 'export';
 type View = Page | 'review';
 type StatusFilter = 'All' | DocumentStatus;
+const ALL_CLIENTS = 'All';
 
 const statuses: StatusFilter[] = [
   'All',
@@ -24,19 +37,28 @@ const statuses: StatusFilter[] = [
 export default function App() {
   const [view, setView] = useState<View>('upload');
   const [documents, setDocuments] = useState<DocumentDto[]>([]);
+  const [clientProfiles, setClientProfiles] = useState<ClientProfileDto[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [reviewDoc, setReviewDoc] = useState<DocumentReviewResponse | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('All');
+  const [clientFilter, setClientFilter] = useState(ALL_CLIENTS);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const loadDocuments = useCallback(async () => {
     try {
-      const response = await getDocuments();
+      const response = await getDocuments({
+        clientProfileId: clientFilter === ALL_CLIENTS ? undefined : clientFilter,
+      });
       setDocuments(response.data);
       setLoadError(null);
     } catch {
       setLoadError('Failed to load documents. Is the API running?');
     }
+  }, [clientFilter]);
+
+  const loadClientProfiles = useCallback(async () => {
+    const response = await getClientProfiles();
+    setClientProfiles(response.data);
   }, []);
 
   useEffect(() => {
@@ -44,6 +66,10 @@ export default function App() {
     const interval = window.setInterval(loadDocuments, 5000);
     return () => window.clearInterval(interval);
   }, [loadDocuments]);
+
+  useEffect(() => {
+    loadClientProfiles();
+  }, [loadClientProfiles]);
 
   const filteredDocuments = useMemo(
     () =>
@@ -107,6 +133,13 @@ export default function App() {
             </button>
             <button
               type="button"
+              className={view === 'clients' ? 'active' : ''}
+              onClick={() => setView('clients')}
+            >
+              Clients
+            </button>
+            <button
+              type="button"
               className={view === 'export' ? 'active' : ''}
               onClick={() => setView('export')}
             >
@@ -123,7 +156,7 @@ export default function App() {
               <h2>Upload Documents</h2>
               <span className="muted">PDF, JPG, PNG</span>
             </div>
-            <UploadZone onUploaded={handleUploaded} />
+            <UploadZone clientProfiles={clientProfiles} onUploaded={handleUploaded} />
           </section>
         </main>
       )}
@@ -152,6 +185,20 @@ export default function App() {
                   ))}
                 </select>
               </label>
+              <label>
+                Client
+                <select
+                  value={clientFilter}
+                  onChange={(event) => setClientFilter(event.target.value)}
+                >
+                  <option value={ALL_CLIENTS}>All</option>
+                  {clientProfiles.map((client) => (
+                    <option key={client.id} value={client.id}>
+                      {client.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
             </div>
 
             {loadError && <p className="message error">{loadError}</p>}
@@ -164,6 +211,12 @@ export default function App() {
               onTriggerProcess={handleTriggerProcess}
             />
           </section>
+        </main>
+      )}
+
+      {view === 'clients' && (
+        <main className="page-stack">
+          <ClientsPanel clientProfiles={clientProfiles} onChanged={loadClientProfiles} />
         </main>
       )}
 

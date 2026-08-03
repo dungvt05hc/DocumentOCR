@@ -5,6 +5,8 @@ namespace DocumentOCR.Application.DTOs;
 public class DocumentDto
 {
     public Guid Id { get; set; }
+    public Guid? ClientProfileId { get; set; }
+    public string? ClientProfileName { get; set; }
     public string OriginalFileName { get; set; } = string.Empty;
     public string ContentType { get; set; } = string.Empty;
     public long FileSizeBytes { get; set; }

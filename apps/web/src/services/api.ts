@@ -1,10 +1,13 @@
 import axios from 'axios';
 import type {
+  ClientProfileDto,
+  CreateClientProfileRequest,
   DocumentDetailDto,
   DocumentDto,
   DocumentReviewResponse,
   ExportRequest,
   OcrDebugResponse,
+  UpdateClientProfileRequest,
   UpdateFieldsRequest,
   UploadFileResult,
 } from '../types';
@@ -29,7 +32,25 @@ export const uploadDocuments = (
   });
 };
 
-export const getDocuments = () => api.get<DocumentDto[]>('/documents');
+export interface GetDocumentsParams {
+  clientProfileId?: string;
+  from?: string;
+  to?: string;
+}
+
+export const getDocuments = (params?: GetDocumentsParams) =>
+  api.get<DocumentDto[]>('/documents', { params });
+
+export const assignDocumentClient = (documentId: string, clientProfileId: string | null) =>
+  api.put(`/documents/${documentId}/client`, { clientProfileId });
+
+export const getClientProfiles = () => api.get<ClientProfileDto[]>('/clients');
+
+export const createClientProfile = (request: CreateClientProfileRequest) =>
+  api.post<ClientProfileDto>('/clients', request);
+
+export const updateClientProfile = (id: string, request: UpdateClientProfileRequest) =>
+  api.put<ClientProfileDto>(`/clients/${id}`, request);
 
 export const getDocumentById = (id: string) =>
   api.get<DocumentDetailDto>(`/documents/${id}`);

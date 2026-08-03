@@ -9,6 +9,7 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
     public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options) : base(options) { }
 
     public DbSet<Organization> Organizations => Set<Organization>();
+    public DbSet<ClientProfile> ClientProfiles => Set<ClientProfile>();
     public DbSet<Document> Documents => Set<Document>();
     public DbSet<DocumentPage> DocumentPages => Set<DocumentPage>();
     public DbSet<ExtractedField> ExtractedFields => Set<ExtractedField>();

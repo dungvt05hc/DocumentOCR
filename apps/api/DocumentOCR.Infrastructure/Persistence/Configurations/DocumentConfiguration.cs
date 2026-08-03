@@ -17,10 +17,17 @@ public class DocumentConfiguration : IEntityTypeConfiguration<Document>
         builder.Property(d => d.ErrorMessage).HasMaxLength(2000);
         builder.Property(d => d.TablesJson).HasColumnType("jsonb");
 
+        builder.HasIndex(d => new { d.OrganizationId, d.ClientProfileId, d.CreatedAt });
+
         builder.HasOne(d => d.Organization)
             .WithMany(o => o.Documents)
             .HasForeignKey(d => d.OrganizationId)
             .OnDelete(DeleteBehavior.Cascade);
+
+        builder.HasOne(d => d.ClientProfile)
+            .WithMany(c => c.Documents)
+            .HasForeignKey(d => d.ClientProfileId)
+            .OnDelete(DeleteBehavior.SetNull);
 
         builder.HasMany(d => d.Pages)
             .WithOne(p => p.Document)

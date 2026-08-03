@@ -11,13 +11,16 @@ namespace DocumentOCR.Infrastructure.Jobs;
 public class DocumentProcessingJob
 {
     private readonly IDocumentProcessingService _processingService;
+    private readonly IClientAutoSuggestService _clientAutoSuggest;
     private readonly ILogger<DocumentProcessingJob> _logger;
 
     public DocumentProcessingJob(
         IDocumentProcessingService processingService,
+        IClientAutoSuggestService clientAutoSuggest,
         ILogger<DocumentProcessingJob> logger)
     {
         _processingService = processingService;
+        _clientAutoSuggest = clientAutoSuggest;
         _logger = logger;
     }
 
@@ -26,6 +29,15 @@ public class DocumentProcessingJob
     {
         _logger.LogInformation("Background job starting for document {Id}", documentId);
         await _processingService.ProcessAsync(documentId);
+
+        // Runs after the pipeline has committed extracted fields — a separate, additive step
+        // that never alters extraction/normalization/validation. See IClientAutoSuggestService.
+        var assigned = await _clientAutoSuggest.TrySuggestAndAssignAsync(documentId);
+        if (assigned)
+        {
+            _logger.LogInformation("Auto-assigned a client profile to document {Id}", documentId);
+        }
+
         _logger.LogInformation("Background job completed for document {Id}", documentId);
     }
 }

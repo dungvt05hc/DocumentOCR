@@ -540,3 +540,59 @@ structured-format source (e.g. a different country's e-invoice standard) is need
 (`TT78XmlInvoiceParser`, singleton in `Infrastructure/DependencyInjection.cs`); supporting multiple
 would need `DocumentProcessingService` to resolve from `IEnumerable<IStructuredInvoiceParser>`
 instead of a single injected instance.
+
+---
+
+## 2026-08-03 — ClientProfile added; auto-suggest only matches on seller (SupplierTaxCode)
+
+**Decision:**
+Added a `ClientProfile` entity (`OrganizationId`, `Name`, `TaxCode`, `ClientType`, `Address`,
+`IsActive`) so an accounting-service user can group/filter documents by which of their own clients
+(household business/enterprise/individual) a document belongs to. `Document.ClientProfileId` is a
+nullable FK — existing documents and newly uploaded ones with no client chosen remain valid with
+`ClientProfileId = null`. A new `IClientAutoSuggestService` runs after `DocumentProcessingService`
+finishes (called from `DocumentProcessingJob.ProcessDocumentAsync`, not from inside the pipeline
+itself) and assigns a `ClientProfile` automatically when the document's extracted
+`SupplierTaxCode` (digits-only normalized, via the existing `IFieldNormalizationService`) matches
+an active client's `TaxCode`.
+
+**Reason:**
+A kế toán dịch vụ (accounting-service user) manages books for 30–80 separate household
+businesses/small enterprises; without a client concept, documents can't be filtered or exported
+per end-client. Auto-suggest saves the manual assignment step for the common case where a
+document's seller tax code is itself one of the user's clients — i.e. an "output invoice"
+(hóa đơn đầu ra) the client issued.
+
+**Impact:**
+- The extractor (`FieldExtractionService`/`FieldName` enum) was deliberately **not** touched — no
+  "buyer tax code" (MST người mua) field exists today, only `SupplierTaxCode` (seller). Auto-suggest
+  therefore only covers documents where the client is the *seller*; a purchase/expense document
+  where the client is the *buyer* (hóa đơn đầu vào) is never auto-assigned and needs manual
+  assignment via `PUT /api/documents/{id}/client`. Adding buyer-side matching would require
+  extracting a new field from OCR output — an OCR-pipeline change explicitly out of scope for this
+  iteration.
+- `IClientAutoSuggestService`/`ClientAutoSuggestService` live in `Application/Services` (no
+  infrastructure dependency — only `IApplicationDbContext` and `IFieldNormalizationService`), and
+  are invoked as a distinct step after `IDocumentProcessingService.ProcessAsync` completes, inside
+  `DocumentProcessingJob` — not inside `DocumentProcessingService` itself — so the OCR pipeline
+  (`.claude/rules/ocr-pipeline.md`) remains untouched by this feature.
+- Auto-suggest never overwrites an existing `ClientProfileId` (manual assignment or a prior
+  auto-suggest always wins) and skips inactive (`IsActive = false`) clients.
+- `ClientProfile.TaxCode` is stored digits-only (normalized on write in `ClientProfileService`, the
+  same normalization `FieldNormalizationService.NormalizeTaxCode` applies to `SupplierTaxCode`) and
+  has a partial unique index on `(OrganizationId, TaxCode)` (`HasFilter("\"TaxCode\" IS NOT NULL")`)
+  so multiple clients with no tax code on file don't collide, but two clients in the same org can
+  never share one real tax code.
+- `GET /api/documents` gained `clientProfileId`/`from`/`to` query filters — the first server-side
+  filters on this endpoint (previously all filtering, e.g. by status, was client-side in `App.tsx`).
+  `from`/`to` filter by the document's normalized `InvoiceDate` extracted field (an ISO
+  `yyyy-MM-dd` string), falling back to `Document.CreatedAt` for documents with no InvoiceDate yet;
+  this is evaluated in-memory per-organization after an EF query (acceptable at MVP per-tenant
+  document volume) rather than as a translated SQL predicate, since `InvoiceDate` lives on
+  `ExtractedField`, not as a column on `Document`.
+
+**Revisit when:**
+A buyer-side tax code field is added to the extraction pipeline (a separate, larger effort per the
+note above) — `ClientAutoSuggestService` would then need a second matching strategy for purchase/
+expense documents where the client is the buyer, not the seller. Also revisit the in-memory
+date-range filtering if per-organization document volume grows enough that it stops being cheap.

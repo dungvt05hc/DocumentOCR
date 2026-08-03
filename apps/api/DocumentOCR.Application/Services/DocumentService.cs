@@ -56,15 +56,80 @@ public class DocumentService
         return MapToDto(document);
     }
 
-    public async Task<List<DocumentDto>> GetAllAsync(Guid organizationId, CancellationToken ct = default)
+    /// <summary>
+    /// <paramref name="invoiceDateFrom"/>/<paramref name="invoiceDateTo"/> filter by the document's
+    /// normalized "InvoiceDate" extracted field (stored as an ISO <c>yyyy-MM-dd</c> string, which
+    /// sorts identically to a real date comparison), falling back to <see cref="Document.CreatedAt"/>
+    /// for documents that have no InvoiceDate field yet (e.g. still processing, or extraction
+    /// couldn't find one).
+    /// </summary>
+    public async Task<List<DocumentDto>> GetAllAsync(
+        Guid organizationId,
+        Guid? clientProfileId = null,
+        DateOnly? invoiceDateFrom = null,
+        DateOnly? invoiceDateTo = null,
+        CancellationToken ct = default)
     {
-        var docs = await _db.Documents
+        var query = _db.Documents
             .Where(d => d.OrganizationId == organizationId)
+            .Include(d => d.ClientProfile)
             .Include(d => d.ValidationWarnings)
-            .OrderByDescending(d => d.CreatedAt)
-            .ToListAsync(ct);
+            .AsQueryable();
+
+        if (clientProfileId is not null)
+            query = query.Where(d => d.ClientProfileId == clientProfileId);
+
+        if (invoiceDateFrom is not null || invoiceDateTo is not null)
+        {
+            query = query.Include(d => d.Fields);
+        }
+
+        var docs = await query.OrderByDescending(d => d.CreatedAt).ToListAsync(ct);
+
+        if (invoiceDateFrom is not null || invoiceDateTo is not null)
+        {
+            docs = docs.Where(d => IsWithinInvoiceDateRange(d, invoiceDateFrom, invoiceDateTo)).ToList();
+        }
 
         return docs.Select(MapToDto).ToList();
+    }
+
+    private static bool IsWithinInvoiceDateRange(Document d, DateOnly? from, DateOnly? to)
+    {
+        var effectiveDate = GetEffectiveInvoiceDate(d);
+        if (from is not null && effectiveDate < from) return false;
+        if (to is not null && effectiveDate > to) return false;
+        return true;
+    }
+
+    private static DateOnly GetEffectiveInvoiceDate(Document d)
+    {
+        var invoiceDateValue = d.Fields
+            .FirstOrDefault(f => f.FieldName == nameof(FieldName.InvoiceDate))?.NormalizedValue;
+
+        return DateOnly.TryParse(invoiceDateValue, out var invoiceDate)
+            ? invoiceDate
+            : DateOnly.FromDateTime(d.CreatedAt);
+    }
+
+    public async Task AssignClientAsync(
+        Guid documentId, Guid organizationId, Guid? clientProfileId, CancellationToken ct = default)
+    {
+        var doc = await _db.Documents
+            .FirstOrDefaultAsync(d => d.Id == documentId && d.OrganizationId == organizationId, ct)
+            ?? throw new KeyNotFoundException($"Document {documentId} not found.");
+
+        if (clientProfileId is not null)
+        {
+            var clientExists = await _db.ClientProfiles.AnyAsync(
+                c => c.Id == clientProfileId && c.OrganizationId == organizationId, ct);
+            if (!clientExists)
+                throw new KeyNotFoundException($"Client {clientProfileId} not found.");
+        }
+
+        doc.ClientProfileId = clientProfileId;
+        doc.UpdatedAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync(ct);
     }
 
     public async Task<DocumentDetailDto?> GetByIdAsync(Guid id, Guid organizationId, CancellationToken ct = default)
@@ -73,6 +138,7 @@ public class DocumentService
             .Include(d => d.Fields)
             .Include(d => d.ValidationWarnings)
             .Include(d => d.OcrProviderLogs)
+            .Include(d => d.ClientProfile)
             .FirstOrDefaultAsync(d => d.Id == id && d.OrganizationId == organizationId, ct);
 
         if (doc is null) return null;
@@ -345,6 +411,8 @@ public class DocumentService
     private static DocumentDto MapToDto(Document d) => new()
     {
         Id = d.Id,
+        ClientProfileId = d.ClientProfileId,
+        ClientProfileName = d.ClientProfile?.Name,
         OriginalFileName = d.OriginalFileName,
         ContentType = d.ContentType,
         FileSizeBytes = d.FileSizeBytes,
@@ -362,6 +430,8 @@ public class DocumentService
     private static DocumentDetailDto MapToDetailDto(Document d) => new()
     {
         Id = d.Id,
+        ClientProfileId = d.ClientProfileId,
+        ClientProfileName = d.ClientProfile?.Name,
         OriginalFileName = d.OriginalFileName,
         ContentType = d.ContentType,
         FileSizeBytes = d.FileSizeBytes,

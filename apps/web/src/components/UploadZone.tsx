@@ -1,19 +1,21 @@
 import { useCallback, useRef, useState } from 'react';
-import { uploadDocuments } from '../services/api';
-import type { UploadFileResult } from '../types';
+import { assignDocumentClient, uploadDocuments } from '../services/api';
+import type { ClientProfileDto, UploadFileResult } from '../types';
 
 interface Props {
+  clientProfiles: ClientProfileDto[];
   onUploaded: (results: UploadFileResult[]) => void;
 }
 
 const allowedTypes = ['application/pdf', 'image/jpeg', 'image/png'];
 const maxFileSizeBytes = 20 * 1024 * 1024;
 
-export function UploadZone({ onUploaded }: Props) {
+export function UploadZone({ clientProfiles, onUploaded }: Props) {
   const [isDragging, setIsDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [clientProfileId, setClientProfileId] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handleFiles = useCallback(
@@ -61,7 +63,14 @@ export function UploadZone({ onUploaded }: Props) {
           );
         }
 
-        if (response.data.some((result) => result.success)) {
+        const succeeded = response.data.filter((result) => result.success && result.document);
+        if (clientProfileId && succeeded.length > 0) {
+          await Promise.all(
+            succeeded.map((result) => assignDocumentClient(result.document!.id, clientProfileId))
+          );
+        }
+
+        if (succeeded.length > 0) {
           onUploaded(response.data);
         }
       } catch {
@@ -71,43 +80,63 @@ export function UploadZone({ onUploaded }: Props) {
         if (inputRef.current) inputRef.current.value = '';
       }
     },
-    [onUploaded]
+    [onUploaded, clientProfileId]
   );
 
   return (
-    <div
-      className={`upload-zone${isDragging ? ' is-dragging' : ''}`}
-      onClick={() => inputRef.current?.click()}
-      onDragOver={(event) => {
-        event.preventDefault();
-        setIsDragging(true);
-      }}
-      onDragLeave={() => setIsDragging(false)}
-      onDrop={(event) => {
-        event.preventDefault();
-        setIsDragging(false);
-        handleFiles(event.dataTransfer.files);
-      }}
-    >
-      <input
-        ref={inputRef}
-        type="file"
-        multiple
-        accept=".pdf,.jpg,.jpeg,.png"
-        onChange={(event) => handleFiles(event.target.files)}
-      />
+    <div className="upload-zone-wrap">
+      <label className="client-select">
+        Khách hàng
+        <select
+          value={clientProfileId}
+          onClick={(event) => event.stopPropagation()}
+          onChange={(event) => setClientProfileId(event.target.value)}
+        >
+          <option value="">(Chưa gán — sẽ tự nhận diện nếu khớp MST)</option>
+          {clientProfiles
+            .filter((client) => client.isActive)
+            .map((client) => (
+              <option key={client.id} value={client.id}>
+                {client.name}
+              </option>
+            ))}
+        </select>
+      </label>
 
-      <strong>Drop documents here or click to choose files</strong>
-      <span>PDF, JPG, PNG. Maximum 20 MB per file.</span>
+      <div
+        className={`upload-zone${isDragging ? ' is-dragging' : ''}`}
+        onClick={() => inputRef.current?.click()}
+        onDragOver={(event) => {
+          event.preventDefault();
+          setIsDragging(true);
+        }}
+        onDragLeave={() => setIsDragging(false)}
+        onDrop={(event) => {
+          event.preventDefault();
+          setIsDragging(false);
+          handleFiles(event.dataTransfer.files);
+        }}
+      >
+        <input
+          ref={inputRef}
+          type="file"
+          multiple
+          accept=".pdf,.jpg,.jpeg,.png"
+          onChange={(event) => handleFiles(event.target.files)}
+        />
 
-      {uploading && (
-        <div className="progress">
-          <div className="progress-bar" style={{ width: `${progress}%` }} />
-          <span>{progress}%</span>
-        </div>
-      )}
+        <strong>Drop documents here or click to choose files</strong>
+        <span>PDF, JPG, PNG. Maximum 20 MB per file.</span>
 
-      {error && <p className="message error">{error}</p>}
+        {uploading && (
+          <div className="progress">
+            <div className="progress-bar" style={{ width: `${progress}%` }} />
+            <span>{progress}%</span>
+          </div>
+        )}
+
+        {error && <p className="message error">{error}</p>}
+      </div>
     </div>
   );
 }

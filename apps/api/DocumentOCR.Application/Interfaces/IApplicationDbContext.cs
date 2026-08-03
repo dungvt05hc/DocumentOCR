@@ -6,6 +6,7 @@ namespace DocumentOCR.Application.Interfaces;
 public interface IApplicationDbContext
 {
     DbSet<Organization> Organizations { get; }
+    DbSet<ClientProfile> ClientProfiles { get; }
     DbSet<Document> Documents { get; }
     DbSet<DocumentPage> DocumentPages { get; }
     DbSet<ExtractedField> ExtractedFields { get; }

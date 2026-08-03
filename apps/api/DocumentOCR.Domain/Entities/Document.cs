@@ -6,6 +6,7 @@ namespace DocumentOCR.Domain.Entities;
 public class Document : BaseEntity
 {
     public Guid OrganizationId { get; set; }
+    public Guid? ClientProfileId { get; set; }
 
     public string OriginalFileName { get; set; } = string.Empty;
     public string StoredFilePath { get; set; } = string.Empty;
@@ -24,6 +25,7 @@ public class Document : BaseEntity
     public string? TablesJson { get; set; }
 
     public Organization Organization { get; set; } = null!;
+    public ClientProfile? ClientProfile { get; set; }
     public ICollection<DocumentPage> Pages { get; set; } = new List<DocumentPage>();
     public ICollection<ExtractedField> Fields { get; set; } = new List<ExtractedField>();
     public ICollection<ValidationWarning> ValidationWarnings { get; set; } = new List<ValidationWarning>();
