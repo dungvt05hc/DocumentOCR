@@ -87,6 +87,13 @@ public static class DependencyInjection
         // ── Export ───────────────────────────────────────────────────────────────
         services.AddScoped<IExcelExportService, ClosedXmlExportService>();
 
+        // Accounting-service reports (Thông tư 88/2021/TT-BTC) — additive, parallel to the export
+        // above. Builder is a pure function over already-loaded data (like IReviewTableBuilder), so
+        // it's safe as a singleton; the renderer has no per-request state either.
+        services.AddSingleton<IAccountingReportBuilder, AccountingReportBuilder>();
+        services.AddSingleton<IAccountingReportWorkbookRenderer, AccountingReportWorkbookRenderer>();
+        services.AddScoped<IAccountingReportExportService, AccountingReportExportService>();
+
         // ── Application services ─────────────────────────────────────────────────
         services.AddScoped<DocumentReviewMappingService>();
         services.AddScoped<DocumentService>();
