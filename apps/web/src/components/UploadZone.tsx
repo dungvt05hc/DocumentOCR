@@ -1,5 +1,7 @@
 import { useCallback, useRef, useState } from 'react';
 import { assignDocumentClient, uploadDocuments } from '../services/api';
+import { Alert } from './Alert';
+import { UploadIcon } from './icons';
 import type { ClientProfileDto, UploadFileResult } from '../types';
 
 interface Props {
@@ -85,7 +87,7 @@ export function UploadZone({ clientProfiles, onUploaded }: Props) {
 
   return (
     <div className="upload-zone-wrap">
-      <label className="client-select">
+      <label className="field">
         Khách hàng
         <select
           value={clientProfileId}
@@ -125,8 +127,16 @@ export function UploadZone({ clientProfiles, onUploaded }: Props) {
           onChange={(event) => handleFiles(event.target.files)}
         />
 
+        <span className="upload-zone-icon">
+          <UploadIcon size={22} />
+        </span>
         <strong>Drop documents here or click to choose files</strong>
-        <span>PDF, JPG, PNG. Maximum 20 MB per file.</span>
+        <span>Maximum 20 MB per file.</span>
+        <span className="chip-row">
+          <span className="chip">PDF</span>
+          <span className="chip">JPG</span>
+          <span className="chip">PNG</span>
+        </span>
 
         {uploading && (
           <div className="progress">
@@ -135,7 +145,11 @@ export function UploadZone({ clientProfiles, onUploaded }: Props) {
           </div>
         )}
 
-        {error && <p className="message error">{error}</p>}
+        {error && (
+          <div onClick={(event) => event.stopPropagation()}>
+            <Alert variant="error">{error}</Alert>
+          </div>
+        )}
       </div>
     </div>
   );

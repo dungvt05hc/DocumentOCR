@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { exportToExcel } from '../services/api';
+import { Alert } from './Alert';
+import { DownloadIcon } from './icons';
 import type { DocumentDto } from '../types';
 
 interface Props {
@@ -11,6 +13,8 @@ interface Props {
 export function ExportPanel({ documents, selectedIds, onClearSelection }: Props) {
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  if (selectedIds.size === 0) return null;
 
   const exportableDocuments = documents.filter(
     (doc) => doc.status === 'Processed' || doc.status === 'Reviewed'
@@ -42,30 +46,24 @@ export function ExportPanel({ documents, selectedIds, onClearSelection }: Props)
   };
 
   return (
-    <section className="panel" id="export">
-      <div className="section-heading">
-        <h2>Export Excel</h2>
-        <span className="muted">{exportableDocuments.length} processed or reviewed</span>
-      </div>
-
+    <div className="export-bar">
       <div className="export-row">
-        <span>
-          {selectedExportableIds.length} selected for export
-        </span>
+        <span className="badge badge-primary">{selectedExportableIds.length} selected for export</span>
         <button
           type="button"
-          className="primary"
+          className="btn-primary"
           onClick={handleExport}
           disabled={exporting || selectedExportableIds.length === 0}
         >
+          <DownloadIcon size={16} />
           {exporting ? 'Exporting...' : 'Download Excel'}
         </button>
-        <button type="button" onClick={onClearSelection} disabled={selectedIds.size === 0}>
+        <button type="button" onClick={onClearSelection}>
           Clear selection
         </button>
       </div>
 
-      {error && <p className="message error">{error}</p>}
-    </section>
+      {error && <Alert variant="error">{error}</Alert>}
+    </div>
   );
 }

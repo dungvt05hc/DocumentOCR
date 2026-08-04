@@ -1,7 +1,17 @@
+import { EmptyState } from './EmptyState';
+import {
+  AlertTriangleIcon,
+  CheckIcon,
+  ClockIcon,
+  DocumentsIcon,
+  FileTypeIcon,
+  RefreshIcon,
+} from './icons';
 import type { DocumentDto, DocumentStatus } from '../types';
 
 interface Props {
   documents: DocumentDto[];
+  isLoading: boolean;
   selectedIds: Set<string>;
   onToggleSelect: (id: string) => void;
   onViewDocument: (id: string) => void;
@@ -17,18 +27,66 @@ const statusClasses: Record<DocumentStatus, string> = {
   Exported: 'status exported',
 };
 
+const statusIcons: Record<DocumentStatus, typeof ClockIcon> = {
+  Uploaded: ClockIcon,
+  Processing: RefreshIcon,
+  Processed: DocumentsIcon,
+  Failed: AlertTriangleIcon,
+  Reviewed: CheckIcon,
+  Exported: CheckIcon,
+};
+
 const canExport = (status: DocumentStatus) =>
   status === 'Processed' || status === 'Reviewed';
 
 export function DocumentTable({
   documents,
+  isLoading,
   selectedIds,
   onToggleSelect,
   onViewDocument,
   onTriggerProcess,
 }: Props) {
+  if (isLoading && documents.length === 0) {
+    return (
+      <div className="table-wrap">
+        <table className="documents-table">
+          <thead>
+            <tr>
+              <th aria-label="Select for export" />
+              <th>File name</th>
+              <th>Client</th>
+              <th>Status</th>
+              <th>Created</th>
+              <th>Document type</th>
+              <th>Warnings</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {Array.from({ length: 4 }).map((_, rowIndex) => (
+              <tr key={rowIndex}>
+                {Array.from({ length: 8 }).map((__, cellIndex) => (
+                  <td key={cellIndex}>
+                    <div className="skeleton-block" style={{ width: cellIndex === 1 ? '70%' : '80%' }} />
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
   if (documents.length === 0) {
-    return <p className="empty-state">No documents match the current filter.</p>;
+    return (
+      <EmptyState
+        icon={<DocumentsIcon size={22} />}
+        title="No documents match the current filter"
+        description="Try a different status or client filter, or upload a new document."
+      />
+    );
   }
 
   return (
@@ -49,6 +107,7 @@ export function DocumentTable({
         <tbody>
           {documents.map((doc) => {
             const exportable = canExport(doc.status);
+            const StatusIcon = statusIcons[doc.status];
 
             return (
               <tr key={doc.id}>
@@ -62,12 +121,20 @@ export function DocumentTable({
                   />
                 </td>
                 <td>
-                  <div className="file-name">{doc.originalFileName}</div>
-                  <div className="muted">{formatBytes(doc.fileSizeBytes)}</div>
+                  <div className="file-name-cell">
+                    <FileTypeIcon size={16} className="file-name-cell-icon" />
+                    <div>
+                      <div className="file-name">{doc.originalFileName}</div>
+                      <div className="muted">{formatBytes(doc.fileSizeBytes)}</div>
+                    </div>
+                  </div>
                 </td>
                 <td>{doc.clientProfileName ?? '—'}</td>
                 <td>
-                  <span className={statusClasses[doc.status]}>{doc.status}</span>
+                  <span className={statusClasses[doc.status]}>
+                    <StatusIcon size={12} className={doc.status === 'Processing' ? 'status-spin' : undefined} />
+                    {doc.status}
+                  </span>
                 </td>
                 <td>{new Date(doc.createdAt).toLocaleString()}</td>
                 <td>{doc.documentType}</td>

@@ -2,6 +2,13 @@ import type { ReviewField, ReviewSection, ReviewWarningDto } from '../../types';
 
 type FieldControl = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
 
+function confidenceClass(confidence: number | null): 'high' | 'medium' | 'low' | 'none' {
+  if (confidence === null) return 'none';
+  if (confidence >= 0.75) return 'high';
+  if (confidence >= 0.5) return 'medium';
+  return 'low';
+}
+
 interface Props {
   sections: ReviewSection[];
   values: Record<string, string>;
@@ -74,8 +81,10 @@ export function ReviewDetailsTab({
                           {field.isRequired ? ' *' : ''}
                         </span>
                         <span className="field-meta">
-                          {field.confidence !== null ? `${Math.round(field.confidence * 100)}%` : 'No confidence'}
-                          {field.isEditedByUser ? ' · edited' : ''}
+                          {field.isEditedByUser && <span className="chip">edited</span>}
+                          <span className={`confidence-pill ${confidenceClass(field.confidence)}`}>
+                            {field.confidence !== null ? `${Math.round(field.confidence * 100)}%` : 'n/a'}
+                          </span>
                         </span>
                       </span>
 

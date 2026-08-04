@@ -8,6 +8,8 @@ import type {
   ReviewWarningDto,
   TableUpdateItem,
 } from '../types';
+import { Alert } from './Alert';
+import { ChevronLeftIcon, SaveIcon } from './icons';
 import { ReviewWarningsBar } from './review/ReviewWarningsBar';
 import { ReviewDetailsTab } from './review/ReviewDetailsTab';
 import { ReviewTablesTab } from './review/ReviewTablesTab';
@@ -180,15 +182,18 @@ export function FieldEditor({ document: doc, onSaved, onBack }: Props) {
   return (
     <main className="review-page">
       <div className="review-header">
-        <button type="button" onClick={onBack}>
-          Back
+        <button type="button" className="btn-icon" onClick={onBack} aria-label="Back to documents">
+          <ChevronLeftIcon size={17} />
         </button>
         <div>
           <h2>{doc.fileName}</h2>
-          <p className="muted">
-            {doc.status} · {doc.documentCategory} · {doc.warnings.length} warning
-            {doc.warnings.length === 1 ? '' : 's'}
-          </p>
+          <div className="review-header-meta">
+            <span className="badge badge-neutral">{doc.status}</span>
+            <span className="badge badge-info">{doc.documentCategory}</span>
+            <span className={doc.warnings.length > 0 ? 'badge badge-warning' : 'badge badge-neutral'}>
+              {doc.warnings.length} warning{doc.warnings.length === 1 ? '' : 's'}
+            </span>
+          </div>
         </div>
       </div>
 
@@ -231,7 +236,8 @@ export function FieldEditor({ document: doc, onSaved, onBack }: Props) {
                   />
                   Debug
                 </label>
-                <button type="button" className="primary" onClick={handleSave} disabled={saving}>
+                <button type="button" className="btn-primary" onClick={handleSave} disabled={saving}>
+                  <SaveIcon size={15} />
                   {saving ? 'Saving...' : 'Save fields'}
                 </button>
               </div>
@@ -244,7 +250,7 @@ export function FieldEditor({ document: doc, onSaved, onBack }: Props) {
               />
             )}
 
-            {error && <p className="message error">{error}</p>}
+            {error && <Alert variant="error">{error}</Alert>}
           </div>
 
           <div className="fields-pane-body">

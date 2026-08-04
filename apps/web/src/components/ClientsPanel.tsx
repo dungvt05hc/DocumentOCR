@@ -1,5 +1,8 @@
 import { useState } from 'react';
 import { createClientProfile, updateClientProfile } from '../services/api';
+import { Alert } from './Alert';
+import { EmptyState } from './EmptyState';
+import { UsersIcon } from './icons';
 import type { ClientProfileDto, ClientType } from '../types';
 
 interface Props {
@@ -66,44 +69,64 @@ export function ClientsPanel({ clientProfiles, onChanged }: Props) {
   return (
     <section className="panel">
       <div className="section-heading">
-        <h2>Khách hàng</h2>
+        <h2>
+          <UsersIcon size={18} />
+          Khách hàng
+        </h2>
+        <span className="chip">{clientProfiles.length} khách hàng</span>
       </div>
 
       <form className="client-form" onSubmit={handleCreate}>
-        <input
-          type="text"
-          placeholder="Tên khách hàng"
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-        />
-        <input
-          type="text"
-          placeholder="Mã số thuế (tuỳ chọn)"
-          value={taxCode}
-          onChange={(event) => setTaxCode(event.target.value)}
-        />
-        <select value={clientType} onChange={(event) => setClientType(event.target.value as ClientType)}>
-          {clientTypes.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-        <input
-          type="text"
-          placeholder="Địa chỉ (tuỳ chọn)"
-          value={address}
-          onChange={(event) => setAddress(event.target.value)}
-        />
-        <button type="submit" disabled={saving}>
+        <label className="field">
+          Tên khách hàng
+          <input
+            type="text"
+            placeholder="Tên khách hàng"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+          />
+        </label>
+        <label className="field">
+          Mã số thuế
+          <input
+            type="text"
+            placeholder="Tuỳ chọn"
+            value={taxCode}
+            onChange={(event) => setTaxCode(event.target.value)}
+          />
+        </label>
+        <label className="field">
+          Loại khách hàng
+          <select value={clientType} onChange={(event) => setClientType(event.target.value as ClientType)}>
+            {clientTypes.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          Địa chỉ
+          <input
+            type="text"
+            placeholder="Tuỳ chọn"
+            value={address}
+            onChange={(event) => setAddress(event.target.value)}
+          />
+        </label>
+        <button type="submit" className="btn-primary" disabled={saving}>
           Thêm khách hàng
         </button>
       </form>
 
-      {error && <p className="message error">{error}</p>}
+      {error && <Alert variant="error">{error}</Alert>}
 
       {clientProfiles.length === 0 ? (
-        <p className="empty-state">Chưa có khách hàng nào.</p>
+        <EmptyState
+          icon={<UsersIcon size={22} />}
+          title="Chưa có khách hàng nào"
+          description="Thêm khách hàng để lọc và tự động gán tài liệu theo mã số thuế."
+        />
       ) : (
         <div className="table-wrap">
           <table className="documents-table">
@@ -119,17 +142,20 @@ export function ClientsPanel({ clientProfiles, onChanged }: Props) {
             <tbody>
               {clientProfiles.map((client) => (
                 <tr key={client.id}>
-                  <td>{client.name}</td>
+                  <td className="file-name">{client.name}</td>
                   <td>{client.taxCode ?? '—'}</td>
                   <td>{clientTypes.find((t) => t.value === client.clientType)?.label ?? client.clientType}</td>
                   <td>{client.address ?? '—'}</td>
                   <td>
-                    <input
-                      type="checkbox"
-                      checked={client.isActive}
-                      onChange={() => handleToggleActive(client)}
-                      aria-label={`Toggle active for ${client.name}`}
-                    />
+                    <label className="switch">
+                      <input
+                        type="checkbox"
+                        checked={client.isActive}
+                        onChange={() => handleToggleActive(client)}
+                        aria-label={`Toggle active for ${client.name}`}
+                      />
+                      <span className="switch-track" />
+                    </label>
                   </td>
                 </tr>
               ))}
