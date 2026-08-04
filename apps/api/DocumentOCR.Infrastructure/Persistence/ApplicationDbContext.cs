@@ -15,6 +15,7 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
     public DbSet<ExtractedField> ExtractedFields => Set<ExtractedField>();
     public DbSet<ValidationWarning> ValidationWarnings => Set<ValidationWarning>();
     public DbSet<OcrProviderLog> OcrProviderLogs => Set<OcrProviderLog>();
+    public DbSet<CreditTransaction> CreditTransactions => Set<CreditTransaction>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

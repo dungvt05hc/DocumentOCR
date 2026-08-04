@@ -12,6 +12,7 @@ public interface IApplicationDbContext
     DbSet<ExtractedField> ExtractedFields { get; }
     DbSet<ValidationWarning> ValidationWarnings { get; }
     DbSet<OcrProviderLog> OcrProviderLogs { get; }
+    DbSet<CreditTransaction> CreditTransactions { get; }
 
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }

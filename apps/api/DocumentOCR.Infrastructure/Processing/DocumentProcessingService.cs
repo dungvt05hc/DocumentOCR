@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using DocumentOCR.Application.Credits;
 using DocumentOCR.Application.Interfaces;
 using DocumentOCR.Application.Models;
 using DocumentOCR.Domain.Entities;
@@ -14,7 +15,10 @@ namespace DocumentOCR.Infrastructure.Processing;
 
 /// <summary>
 /// Orchestrates the full document processing pipeline: structured-format fast path (e.g. TT78
-/// invoice XML) when available, OCR pipeline otherwise.
+/// invoice XML) when available, OCR pipeline otherwise. Catches its own failures internally
+/// (never rethrows), so <c>Status = Failed</c> set here is this system's only notion of
+/// "processing failed permanently" — Hangfire's <c>[AutomaticRetry]</c> on the calling job never
+/// actually re-runs a business-logic failure, only an exception this method didn't catch.
 /// </summary>
 public class DocumentProcessingService : IDocumentProcessingService
 {
@@ -27,7 +31,9 @@ public class DocumentProcessingService : IDocumentProcessingService
     private readonly IFieldNormalizationService _normalization;
     private readonly IFieldValidationService _validation;
     private readonly IStructuredInvoiceParser _structuredInvoiceParser;
+    private readonly ICreditService _creditService;
     private readonly OcrOptions _ocrOptions;
+    private readonly CreditOptions _creditOptions;
     private readonly ILogger<DocumentProcessingService> _logger;
 
     public DocumentProcessingService(
@@ -38,7 +44,9 @@ public class DocumentProcessingService : IDocumentProcessingService
         IFieldNormalizationService normalization,
         IFieldValidationService validation,
         IStructuredInvoiceParser structuredInvoiceParser,
+        ICreditService creditService,
         IOptions<OcrOptions> ocrOptions,
+        IOptions<CreditOptions> creditOptions,
         ILogger<DocumentProcessingService> logger)
     {
         _db = db;
@@ -48,7 +56,9 @@ public class DocumentProcessingService : IDocumentProcessingService
         _normalization = normalization;
         _validation = validation;
         _structuredInvoiceParser = structuredInvoiceParser;
+        _creditService = creditService;
         _ocrOptions = ocrOptions.Value;
+        _creditOptions = creditOptions.Value;
         _logger = logger;
     }
 
@@ -113,6 +123,8 @@ public class DocumentProcessingService : IDocumentProcessingService
             {
                 _logger.LogError(saveEx, "Failed to save failure status for document {DocumentId}", documentId);
             }
+
+            await RefundProcessingCreditsAsync(document, CancellationToken.None);
         }
     }
 
@@ -178,6 +190,8 @@ public class DocumentProcessingService : IDocumentProcessingService
                 documentId,
                 _ocrProvider.ProviderName,
                 document.ErrorMessage);
+
+            await RefundProcessingCreditsAsync(document, ct);
 
             return;
         }
@@ -274,6 +288,8 @@ public class DocumentProcessingService : IDocumentProcessingService
                 documentId,
                 document.ErrorMessage);
 
+            await RefundProcessingCreditsAsync(document, ct);
+
             return;
         }
 
@@ -362,6 +378,28 @@ public class DocumentProcessingService : IDocumentProcessingService
     {
         using var stream = new MemoryStream(Encoding.UTF8.GetBytes(json));
         return await _storage.SaveAsync(stream, fileName, "application/json", ct);
+    }
+
+    /// <summary>
+    /// A document reaching <see cref="DocumentStatus.Failed"/> is this pipeline's only notion of
+    /// "processing failed permanently" — see the class remarks on retry behavior. Refunds the
+    /// same amount that was charged for this attempt (same content-type-based pricing), so the
+    /// organization is never left paying for a document that was never actually processed.
+    /// Refund failures are logged but never allowed to fail the processing job itself.
+    /// </summary>
+    private async Task RefundProcessingCreditsAsync(Document document, CancellationToken ct)
+    {
+        var amount = CreditPricing.ResolveCost(document.ContentType, _creditOptions);
+        try
+        {
+            await _creditService.RefundAsync(
+                document.OrganizationId, amount, "Document", document.Id, "Processing failed permanently", ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex, "Failed to refund {Amount} credit(s) for permanently failed document {DocumentId}", amount, document.Id);
+        }
     }
 
     private void RemoveStaleProcessingArtifacts(Document document)

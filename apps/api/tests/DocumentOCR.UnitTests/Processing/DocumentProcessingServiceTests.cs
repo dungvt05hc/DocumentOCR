@@ -1,3 +1,4 @@
+using DocumentOCR.Application.Credits;
 using DocumentOCR.Application.Interfaces;
 using DocumentOCR.Application.Models;
 using DocumentOCR.Application.Processing;
@@ -133,7 +134,9 @@ public class DocumentProcessingServiceTests
         IDocumentOcrProvider ocrProvider,
         IDocumentStorageService storage,
         OcrOptions? ocrOptions = null,
-        IStructuredInvoiceParser? structuredInvoiceParser = null) =>
+        IStructuredInvoiceParser? structuredInvoiceParser = null,
+        ICreditService? creditService = null,
+        CreditOptions? creditOptions = null) =>
         new(
             db,
             storage,
@@ -142,7 +145,9 @@ public class DocumentProcessingServiceTests
             new FieldNormalizationService(),
             new FieldValidationService(new DocumentProfileCatalog()),
             structuredInvoiceParser ?? new NeverMatchingStructuredInvoiceParser(),
+            creditService ?? new RecordingCreditService(),
             Options.Create(ocrOptions ?? new OcrOptions()),
+            Options.Create(creditOptions ?? new CreditOptions()),
             NullLogger<DocumentProcessingService>.Instance);
 
     private static ApplicationDbContext CreateDbContext()
@@ -357,5 +362,83 @@ public class DocumentProcessingServiceTests
 
         public Task<StructuredInvoiceResult> ParseAsync(Stream content, CancellationToken ct = default) =>
             throw new NotSupportedException("Should never be called when CanParse returns false.");
+    }
+
+    // ── Credit refund on permanent failure ──────────────────────────────────────────
+
+    [Fact]
+    public async Task ProcessAsync_OcrProviderReturnsUnsuccessfulResult_RefundsProcessingCredits()
+    {
+        await using var db = CreateDbContext();
+        var document = await SeedDocumentAsync(db, DocumentStatus.Uploaded, doc => doc.ContentType = "application/pdf");
+        var failingProvider = new StubOcrProvider(new NormalizedOcrDocument { Success = false, ProviderName = "Stub", ErrorMessage = "boom", PageCount = 0 });
+        var creditService = new RecordingCreditService();
+        var creditOptions = new CreditOptions { OcrExtraction = 2 };
+        var sut = CreateSut(db, failingProvider, new FakeDocumentStorageService(), creditService: creditService, creditOptions: creditOptions);
+
+        await sut.ProcessAsync(document.Id);
+
+        var refund = Assert.Single(creditService.Refunds);
+        Assert.Equal(OrganizationId, refund.OrganizationId);
+        Assert.Equal(2, refund.Amount);
+        Assert.Equal("Document", refund.ReferenceType);
+        Assert.Equal(document.Id, refund.ReferenceId);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_OcrProviderThrows_RefundsProcessingCredits()
+    {
+        await using var db = CreateDbContext();
+        var document = await SeedDocumentAsync(db, DocumentStatus.Uploaded, doc => doc.ContentType = "application/pdf");
+        var creditService = new RecordingCreditService();
+        var creditOptions = new CreditOptions { OcrExtraction = 2 };
+        var sut = CreateSut(db, new ThrowingOcrProvider(), new FakeDocumentStorageService(), creditService: creditService, creditOptions: creditOptions);
+
+        await sut.ProcessAsync(document.Id);
+
+        var refund = Assert.Single(creditService.Refunds);
+        Assert.Equal(2, refund.Amount);
+        Assert.Equal(document.Id, refund.ReferenceId);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_SuccessfulOcr_DoesNotRefundCredits()
+    {
+        await using var db = CreateDbContext();
+        var document = await SeedDocumentAsync(db, DocumentStatus.Uploaded);
+        var creditService = new RecordingCreditService();
+        var sut = CreateSut(db, new FakeOcrProvider(), new FakeDocumentStorageService(), creditService: creditService);
+
+        await sut.ProcessAsync(document.Id);
+
+        Assert.Empty(creditService.Refunds);
+    }
+
+    private sealed class RecordingCreditService : ICreditService
+    {
+        public List<(Guid OrganizationId, int Amount, string ReferenceType, Guid ReferenceId)> Refunds { get; } = [];
+
+        public Task<long> GetBalanceAsync(Guid organizationId, CancellationToken ct = default) =>
+            Task.FromResult(0L);
+
+        public Task<(IReadOnlyList<CreditTransaction> Items, int TotalCount)> GetTransactionsAsync(
+            Guid organizationId, int page, int pageSize, CancellationToken ct = default) =>
+            Task.FromResult<(IReadOnlyList<CreditTransaction> Items, int TotalCount)>(([], 0));
+
+        public Task<bool> TryConsumeAsync(
+            Guid organizationId, int amount, string referenceType, Guid referenceId,
+            string? description = null, CancellationToken ct = default) =>
+            Task.FromResult(true);
+
+        public Task RefundAsync(
+            Guid organizationId, int amount, string referenceType, Guid referenceId,
+            string? description = null, CancellationToken ct = default)
+        {
+            Refunds.Add((organizationId, amount, referenceType, referenceId));
+            return Task.CompletedTask;
+        }
+
+        public Task TopUpAsync(Guid organizationId, int amount, string? description = null, CancellationToken ct = default) =>
+            Task.CompletedTask;
     }
 }

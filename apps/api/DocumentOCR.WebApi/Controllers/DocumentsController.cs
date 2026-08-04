@@ -1,5 +1,8 @@
 using System.Xml;
+using DocumentOCR.Application.Credits;
 using DocumentOCR.Application.DTOs;
+using DocumentOCR.Application.Exceptions;
+using DocumentOCR.Application.Interfaces;
 using DocumentOCR.Application.Services;
 using DocumentOCR.Domain.Common;
 using DocumentOCR.Infrastructure.Jobs;
@@ -17,8 +20,10 @@ public class DocumentsController : ControllerBase
 {
     private readonly DocumentService _documentService;
     private readonly IBackgroundJobClient _jobs;
+    private readonly ICreditService _creditService;
     private readonly ILogger<DocumentsController> _logger;
     private readonly OcrDebugOptions _ocrDebugOptions;
+    private readonly CreditOptions _creditOptions;
 
     // For MVP, we use a fixed organization. In a real multi-tenant app,
     // this would come from the authenticated user's claims.
@@ -53,13 +58,17 @@ public class DocumentsController : ControllerBase
     public DocumentsController(
         DocumentService documentService,
         IBackgroundJobClient jobs,
+        ICreditService creditService,
         ILogger<DocumentsController> logger,
-        IOptions<OcrDebugOptions> ocrDebugOptions)
+        IOptions<OcrDebugOptions> ocrDebugOptions,
+        IOptions<CreditOptions> creditOptions)
     {
         _documentService = documentService;
         _jobs = jobs;
+        _creditService = creditService;
         _logger = logger;
         _ocrDebugOptions = ocrDebugOptions.Value;
+        _creditOptions = creditOptions.Value;
     }
 
     // POST /api/documents/upload
@@ -99,15 +108,48 @@ public class DocumentsController : ControllerBase
                 DefaultOrganizationId,
                 ct);
 
+            var cost = CreditPricing.ResolveCost(dto.ContentType, _creditOptions);
+            bool consumed;
+            try
+            {
+                consumed = await _creditService.TryConsumeAsync(
+                    DefaultOrganizationId, cost, "Document", dto.Id, "Document processing", ct);
+            }
+            catch (DailyCreditCapExceededException ex)
+            {
+                _logger.LogWarning(
+                    "Not enqueuing document {DocumentId}: {Message}", dto.Id, ex.Message);
+                return new UploadFileResult
+                {
+                    FileName = file.FileName,
+                    Success = false,
+                    Error = ex.Message
+                };
+            }
+
+            if (!consumed)
+            {
+                _logger.LogWarning(
+                    "Not enqueuing document {DocumentId}: organization {OrganizationId} has insufficient credit balance for {Cost} credit(s)",
+                    dto.Id, DefaultOrganizationId, cost);
+                return new UploadFileResult
+                {
+                    FileName = file.FileName,
+                    Success = false,
+                    Error = "Insufficient credit balance. Please top up to continue."
+                };
+            }
+
             var jobId = _jobs.Enqueue<DocumentProcessingJob>(
                 job => job.ProcessDocumentAsync(dto.Id));
 
             _logger.LogInformation(
-                "Uploaded document {DocumentId} ({FileName}, {ContentType}, {FileSizeBytes} bytes) and enqueued Hangfire job {JobId}",
+                "Uploaded document {DocumentId} ({FileName}, {ContentType}, {FileSizeBytes} bytes), charged {Cost} credit(s), and enqueued Hangfire job {JobId}",
                 dto.Id,
                 dto.OriginalFileName,
                 dto.ContentType,
                 dto.FileSizeBytes,
+                cost,
                 jobId);
 
             return new UploadFileResult
@@ -192,15 +234,36 @@ public class DocumentsController : ControllerBase
     [EnableRateLimiting("OcrProcessing")]
     public async Task<IActionResult> Process(Guid id, CancellationToken ct)
     {
+        var doc = await _documentService.GetByIdAsync(id, DefaultOrganizationId, ct);
+        if (doc is null) return NotFound(new { error = $"Document {id} not found." });
+
+        // This endpoint is what a repeated-call spending attack would hit (unlike upload, it
+        // has no file-storage cost to slow an attacker down), so it must charge credit before
+        // enqueuing exactly like Upload does — otherwise it's an unlimited-retries burn loop
+        // bounded only by the per-IP rate limiter, not by the org's actual credit balance.
+        var cost = CreditPricing.ResolveCost(doc.ContentType, _creditOptions);
+        var consumed = await _creditService.TryConsumeAsync(
+            DefaultOrganizationId, cost, "Document", id, "Manual reprocess", ct);
+
+        if (!consumed)
+        {
+            _logger.LogWarning(
+                "Not re-enqueuing document {DocumentId}: organization {OrganizationId} has insufficient credit balance for {Cost} credit(s)",
+                id, DefaultOrganizationId, cost);
+            return StatusCode(StatusCodes.Status402PaymentRequired,
+                new { error = "Insufficient credit balance. Please top up to continue." });
+        }
+
         await _documentService.MarkUploadedForProcessingAsync(id, DefaultOrganizationId, ct);
 
         var jobId = _jobs.Enqueue<DocumentProcessingJob>(
             job => job.ProcessDocumentAsync(id));
 
         _logger.LogInformation(
-            "Manually enqueued processing for document {DocumentId} as Hangfire job {JobId}",
+            "Manually enqueued processing for document {DocumentId} as Hangfire job {JobId}, charged {Cost} credit(s)",
             id,
-            jobId);
+            jobId,
+            cost);
 
         return Accepted(new { documentId = id, jobId, message = "Processing enqueued." });
     }

@@ -1,4 +1,5 @@
 using DocumentOCR.Application.Interfaces;
+using DocumentOCR.Domain.Common;
 using DocumentOCR.Infrastructure.Ocr;
 using DocumentOCR.Infrastructure.Persistence;
 using Hangfire;
@@ -88,6 +89,14 @@ public class CustomWebApplicationFactory : WebApplicationFactory<Program>
 
         using var scope = host.Services.CreateScope();
         scope.ServiceProvider.GetRequiredService<ApplicationDbContext>().Database.EnsureCreated();
+
+        // Every test that uploads/reprocesses a document now goes through the credit-charging
+        // integration point in DocumentsController, so the default org needs a starting balance
+        // or every one of those requests would be rejected as insufficient-balance before this
+        // test suite even gets to exercise the pipeline it's actually testing.
+        scope.ServiceProvider.GetRequiredService<ICreditService>()
+            .TopUpAsync(DefaultOrganization.Id, 100_000, "Integration test seed balance")
+            .GetAwaiter().GetResult();
 
         return host;
     }

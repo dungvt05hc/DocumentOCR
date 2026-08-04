@@ -1,7 +1,9 @@
+using DocumentOCR.Application.Credits;
 using DocumentOCR.Application.Interfaces;
 using DocumentOCR.Application.Processing;
 using DocumentOCR.Application.Profiles;
 using DocumentOCR.Application.Services;
+using DocumentOCR.Infrastructure.Credits;
 using DocumentOCR.Infrastructure.Export;
 using DocumentOCR.Infrastructure.Jobs;
 using DocumentOCR.Infrastructure.Ocr;
@@ -71,6 +73,10 @@ public static class DependencyInjection
         // ── Document review profiles ────────────────────────────────────────────
         // Pure static data, no per-request state — safe (and cheap) as a singleton.
         services.AddSingleton<IDocumentProfileCatalog, DocumentProfileCatalog>();
+
+        // ── Credits ──────────────────────────────────────────────────────────────
+        services.Configure<CreditOptions>(configuration.GetSection(CreditOptions.SectionName));
+        services.AddScoped<ICreditService, CreditService>();
 
         // ── Processing pipeline ──────────────────────────────────────────────────
         services.AddScoped<IFieldExtractionService, FieldExtractionService>();

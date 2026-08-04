@@ -29,6 +29,12 @@ public class GlobalExceptionMiddleware
         {
             await WriteErrorAsync(context, HttpStatusCode.BadRequest, ex.Message);
         }
+        catch (DailyCreditCapExceededException ex)
+        {
+            // Already logged as a Warning (with full detail) by ICreditService at the point of
+            // rejection — this is a system-imposed spend cap, not an unexpected error.
+            await WriteErrorAsync(context, HttpStatusCode.TooManyRequests, ex.Message);
+        }
         catch (PathTraversalException ex)
         {
             _logger.LogWarning(ex, "Path traversal attempt blocked");
