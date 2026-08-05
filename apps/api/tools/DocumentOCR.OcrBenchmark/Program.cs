@@ -70,6 +70,11 @@ var paddleProvider = new PaddleOcrProvider(
     Options.Create(paddleOptions), loggerFactory.CreateLogger<PaddleOcrProvider>());
 targets.Add((paddleProvider, "Paddle"));
 
+// Only applicable to PDF input (see ContentTypeMapper) -- prepended per-file below so it always
+// runs first for a PDF sample, ahead of the Azure models it's being compared against.
+var pdfTextLayerProvider = new PdfTextLayerProvider(
+    Options.Create(new PdfTextLayerOptions()), loggerFactory.CreateLogger<PdfTextLayerProvider>());
+
 if (!azureOptions.IsConfigured)
 {
     Console.WriteLine(
@@ -143,7 +148,11 @@ foreach (var filePath in files)
     // validation-warnings.json outputs can be diffed side by side.
     var documentId = DeterministicDocumentId.ForFileName(fileName);
 
-    foreach (var (provider, label) in targets)
+    var fileTargets = string.Equals(contentType, "application/pdf", StringComparison.OrdinalIgnoreCase)
+        ? new List<(IDocumentOcrProvider Provider, string Label)> { (pdfTextLayerProvider, "PdfTextLayer") }.Concat(targets).ToList()
+        : targets;
+
+    foreach (var (provider, label) in fileTargets)
     {
         Console.WriteLine($"Processing {fileName} with {label}...");
 
@@ -165,7 +174,9 @@ var csvPath = Path.Combine(runDir, "summary.csv");
 await CsvSummaryWriter.WriteAsync(csvPath, rows, CancellationToken.None);
 
 Console.WriteLine();
-Console.WriteLine($"Done. {files.Count} file(s) x {targets.Count} target(s) = {rows.Count} row(s).");
+// Not a flat files x targets product: PDF samples run one extra target (PdfTextLayer) that
+// JPG/PNG samples don't -- see the per-file fileTargets list above.
+Console.WriteLine($"Done. {files.Count} file(s), {rows.Count} row(s) total.");
 Console.WriteLine($"Output: {runDir}");
 Console.WriteLine($"Summary CSV: {csvPath}");
 

@@ -42,7 +42,33 @@ public class OcrProviderRegistryTests
     [InlineData("Azure", typeof(AzureDocumentIntelligenceProvider))]
     [InlineData("Paddle", typeof(PaddleOcrProvider))]
     [InlineData("SomethingUnknown", typeof(FakeOcrProvider))]
-    public void Register_SelectsExpectedProviderImplementation(string? provider, Type expectedType)
+    public void Register_PdfTextLayerDisabled_SelectsExpectedProviderImplementationDirectly(
+        string? provider, Type expectedType)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.Configure<AzureOcrOptions>(_ => { });
+        services.Configure<PaddleOcrOptions>(_ => { });
+        services.Configure<PdfTextLayerOptions>(o => o.Enabled = false);
+
+        OcrProviderRegistry.Register(services, ConfigWithProvider(provider));
+
+        using var sp = services.BuildServiceProvider();
+        var resolved = sp.GetRequiredService<IDocumentOcrProvider>();
+
+        Assert.IsType(expectedType, resolved);
+    }
+
+    // PdfTextLayer:Enabled defaults to true (PdfTextLayerOptions), so by default the registered
+    // IDocumentOcrProvider is always PdfProviderRouter, wrapping whichever concrete provider
+    // "Ocr:Provider" selected -- see PdfProviderRouterTests for the routing behavior itself.
+    [Theory]
+    [InlineData("Fake")]
+    [InlineData(null)]
+    [InlineData("Azure")]
+    [InlineData("Paddle")]
+    [InlineData("SomethingUnknown")]
+    public void Register_PdfTextLayerEnabledByDefault_WrapsConfiguredProviderInRouter(string? provider)
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -54,6 +80,6 @@ public class OcrProviderRegistryTests
         using var sp = services.BuildServiceProvider();
         var resolved = sp.GetRequiredService<IDocumentOcrProvider>();
 
-        Assert.IsType(expectedType, resolved);
+        Assert.IsType<PdfProviderRouter>(resolved);
     }
 }

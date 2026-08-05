@@ -162,7 +162,10 @@ public class DocumentProcessingService : IDocumentProcessingService
         _db.OcrProviderLogs.Add(new OcrProviderLog
         {
             DocumentId = documentId,
-            ProviderName = _ocrProvider.ProviderName,
+            // ocrResult.ProviderName (not _ocrProvider.ProviderName) so the audit trail reflects
+            // which branch actually produced this result when the injected provider is
+            // PdfProviderRouter (e.g. "PdfTextLayer" vs. the configured OCR provider it fell back to).
+            ProviderName = ocrResult.ProviderName,
             ModelId = ocrResult.ModelId,
             PageCount = ocrResult.PageCount,
             ProcessingTimeMs = ocrResult.ProcessingTimeMs,

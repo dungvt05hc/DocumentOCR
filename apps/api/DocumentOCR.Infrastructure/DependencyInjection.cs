@@ -41,6 +41,7 @@ public static class DependencyInjection
         // ── OCR provider ─────────────────────────────────────────────────────────
         services.Configure<OcrOptions>(configuration.GetSection(OcrOptions.SectionName));
         services.Configure<OcrDebugOptions>(configuration.GetSection(OcrDebugOptions.SectionName));
+        services.Configure<PdfTextLayerOptions>(configuration.GetSection(PdfTextLayerOptions.SectionName));
 
         // Selected via "Ocr:Provider" config ("Fake" | "Azure" | "Paddle"); defaults to Fake so
         // local/test environments never accidentally call a real provider without opting in.

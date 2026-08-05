@@ -596,3 +596,57 @@ A buyer-side tax code field is added to the extraction pipeline (a separate, lar
 note above) — `ClientAutoSuggestService` would then need a second matching strategy for purchase/
 expense documents where the client is the buyer, not the seller. Also revisit the in-memory
 date-range filtering if per-organization document volume grows enough that it stops being cheap.
+
+---
+
+## 2026-08-05 — Software-generated PDFs read their text layer directly, as an IDocumentOcrProvider behind a router
+
+**Decision:**
+Vietnamese e-invoice PDFs (MISA/Viettel/VNPT/BKAV, ...) already carry an exact, provider-generated
+text layer — running OCR on them is both slower and less accurate than reading the layer directly.
+Added `PdfTextLayerProvider : IDocumentOcrProvider` (`Infrastructure/Ocr`, backed by PdfPig) that
+reads words/lines per page straight from the PDF and maps them into the same `NormalizedOcrDocument`
+shape every other provider produces — zero changes to `FieldExtractionService`. A new
+`PdfProviderRouter : IDocumentOcrProvider` is registered as `OcrProviderRegistry`'s actual DI output
+(gated by `Ocr:PdfTextLayer:Enabled`, default true): for `application/pdf` uploads it tries the text
+layer first and falls back to the configured OCR provider only when the PDF turns out to be a scan
+(< `Ocr:PdfTextLayer:MinExtractedCharacters`, default 100, extracted across all pages) or the read
+fails; non-PDF uploads (JPG/PNG) go straight to the configured provider, unchanged.
+
+**Reason:**
+Unlike the TT78 XML fast path (see the 2026-08-03 entry above), a software-generated PDF has no
+schema to parse directly — it still needs the same field-guessing extraction every OCR result goes
+through. That ruled out an `IStructuredInvoiceParser`-style bypass and pointed at implementing this
+as another `IDocumentOcrProvider`: `FieldExtractionService` already has a working line-proximity/
+regex-fallback path (used whenever `Fields`/`KeyValuePairs` are empty, e.g. Azure `prebuilt-layout`
+without the `keyValuePairs` add-on), so a provider that only populates `Pages`/`Lines`/`Words`/
+`FullText` needs no extraction-layer changes at all.
+
+**Impact:**
+- `OcrProviderRegistry.Register` now registers the configured provider (Fake/Azure/Paddle) under its
+  own concrete type first, then builds the final `IDocumentOcrProvider` via a factory that wraps it
+  in `PdfProviderRouter` unless `PdfTextLayer:Enabled` is false. `DocumentProcessingService` still
+  resolves a single `IDocumentOcrProvider` and never branches on content type itself.
+- `DocumentProcessingService.ProcessViaOcrAsync`'s `OcrProviderLog.ProviderName` now reads from
+  `ocrResult.ProviderName` (the value the branch that actually ran set) instead of
+  `_ocrProvider.ProviderName` (the DI-resolved instance's own static name) — required so the audit
+  trail says "PdfTextLayer" or the real fallback provider's name instead of always
+  "PdfProviderRouter". Verified as a no-op for every prior provider, since each one already sets
+  both to the same value.
+- `PdfProviderRouter` depends on `IDocumentOcrProvider` for *both* the text-layer and OCR-fallback
+  providers (not the concrete `PdfTextLayerProvider` type), purely for testability — production DI
+  still passes the real `PdfTextLayerProvider`, which implements the same interface like everything
+  else.
+- `OcrProviderRegistryTests.Register_SelectsExpectedProviderImplementation` — which asserted the
+  resolved `IDocumentOcrProvider` was the exact concrete provider type — was split into two theories
+  (`PdfTextLayer:Enabled=false` → concrete type as before; default/enabled → `PdfProviderRouter`),
+  since that assertion's premise changed on purpose.
+- `DocumentOCR.OcrBenchmark` runs `PdfTextLayerProvider` as an extra per-file target, prepended only
+  for `application/pdf` samples (JPG/PNG samples don't get it), alongside the existing Azure models.
+
+**Revisit when:**
+A real MISA e-invoice sample (`apps/api/tests/Fixtures/misa-einvoice-sample.pdf`, not committed —
+real invoice content) is available to run `PdfTextLayerProviderTests`'
+`AnalyzeAsync_MisaEInvoiceSample_ExtractsExpectedFieldsWhenFixturePresent` for real; until then it's
+a no-op guarded by `File.Exists`. Also revisit the fixed 0.95 word confidence and the 100-character
+scan threshold if real samples show either needs tuning.

@@ -115,6 +115,13 @@ dotnet user-secrets set "Ocr:Provider" "Azure"
 export Ocr__Provider="Azure"
 ```
 
+**PDF text-layer-first path**: whichever provider you pick above only actually runs for PDF uploads
+when the PDF turns out to be a scan (or the read fails) — `PdfProviderRouter` (the provider
+`OcrProviderRegistry` actually registers) tries `PdfTextLayerProvider` first for software-generated
+PDFs, since those already carry an exact text layer that's pointless to re-OCR. Set
+`Ocr:PdfTextLayer:Enabled` to `false` to force every PDF through the configured provider above (e.g.
+to compare extraction quality between the two paths). JPG/PNG uploads are unaffected either way.
+
 **Startup validation**: if `Ocr:Provider` is `Azure` but `Endpoint`/`ApiKey` are missing, the app
 now **fails fast at startup** with a clear `OptionsValidationException` message, rather than
 starting normally and only failing on the first document upload. This is intentional — a

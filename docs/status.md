@@ -56,6 +56,12 @@ only produces a file download, it does not mutate document status (see Known iss
     part of this repo; contract documented in [LOCAL_DEVELOPMENT.md](../LOCAL_DEVELOPMENT.md)).
   - Fail-fast startup validation: booting with `Ocr:Provider=Azure`/`Paddle` but missing
     credentials/`BaseUrl` throws `OptionsValidationException` at host startup, not on first upload.
+- **PDF text-layer-first path** — `PdfTextLayerProvider` (PdfPig-backed `IDocumentOcrProvider`)
+  reads a software-generated PDF's embedded text layer directly instead of running OCR; wrapped by
+  `PdfProviderRouter`, which is what `OcrProviderRegistry` actually registers as `IDocumentOcrProvider`
+  by default (`Ocr:PdfTextLayer:Enabled`, default true). PDF uploads try the text layer first and
+  fall back to whichever OCR provider is configured only when the PDF is a scan or the read fails;
+  JPG/PNG uploads are unaffected. See the 2026-08-05 entry in [decisions.md](decisions.md).
 - **Field extraction**: multi-strategy candidate scoring (KeyValuePair, StructuredField, table
   footer, line-keyword proximity, top-line merchant heuristic for POS receipts, full-text/paragraph
   regex fallback, document-type and currency heuristics), diacritics-insensitive Vietnamese keyword
@@ -176,6 +182,12 @@ model ID and feature list). Extraction logic reads from whichever of
 `Fields`/`KeyValuePairs`/`Tables`/`Pages.Lines`/`FullText` the active provider actually populates,
 so the same downstream pipeline works across all three without provider-specific branches outside
 `Infrastructure/Ocr`.
+
+A fourth `IDocumentOcrProvider`, `PdfTextLayerProvider`, sits in front of whichever of the three is
+configured: `PdfProviderRouter` (the actual DI registration for `IDocumentOcrProvider`) reads a PDF's
+text layer directly for software-generated PDFs and only calls into the configured provider for
+scanned PDFs or JPG/PNG uploads. See "PDF text-layer-first path" above and
+[decisions.md](decisions.md).
 
 ## Azure status
 
