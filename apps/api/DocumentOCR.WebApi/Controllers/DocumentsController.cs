@@ -29,31 +29,38 @@ public class DocumentsController : ControllerBase
     // this would come from the authenticated user's claims.
     private static readonly Guid DefaultOrganizationId = DefaultOrganization.Id;
 
-    private static readonly Dictionary<string, string[]> AllowedExtensionsByContentType =
-        new(StringComparer.OrdinalIgnoreCase)
-        {
-            ["application/pdf"] = [".pdf"],
-            ["image/jpeg"] = [".jpg", ".jpeg"],
-            ["image/png"] = [".png"],
-            ["text/xml"] = [".xml"],
-            ["application/xml"] = [".xml"]
-        };
-
-    // Magic-byte signatures for the binary content types. Client-supplied Content-Type and file
-    // extension are trivially spoofable, so we also verify the actual file bytes before
-    // persisting anything to storage. XML has no fixed magic bytes — see
-    // ValidateXmlRootElementAsync for its own (content-type-specific) validation strategy.
-    private static readonly Dictionary<string, byte[]> MagicBytesByContentType =
-        new(StringComparer.OrdinalIgnoreCase)
-        {
-            ["application/pdf"] = [0x25, 0x50, 0x44, 0x46], // %PDF
-            ["image/jpeg"] = [0xFF, 0xD8, 0xFF],
-            ["image/png"] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
-        };
-
     private const long MaxFileSizeBytes = 20 * 1024 * 1024; // 20 MB (PDF/JPG/PNG)
     private const long MaxXmlFileSizeBytes = 5 * 1024 * 1024; // 5 MB (structured TT78 XML invoices)
     private const int XmlValidationPeekBytes = 64 * 1024; // only peek at the start — never load the whole file to validate
+
+    private enum ContentValidationStrategy
+    {
+        MagicBytes,
+        Xml
+    }
+
+    private sealed record UploadRule(
+        string[] AcceptableContentTypes,
+        long MaxSizeBytes,
+        ContentValidationStrategy Strategy,
+        byte[]? MagicBytes = null);
+
+    // File EXTENSION is the primary validation key, not client-supplied Content-Type: browsers
+    // and OSes send wildly inconsistent Content-Type values for the same file (.xml in
+    // particular shows up as text/xml, application/xml, application/octet-stream, or empty
+    // depending on the machine), so keying off it first would reject legitimate uploads.
+    // AcceptableContentTypes is only a secondary cross-check — see ValidateUpload. XML has no
+    // fixed magic bytes, so it gets its own strategy (ValidateXmlRootElementAsync) instead of a
+    // byte signature.
+    private static readonly Dictionary<string, UploadRule> AllowedUploads =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            [".pdf"] = new(["application/pdf"], MaxFileSizeBytes, ContentValidationStrategy.MagicBytes, [0x25, 0x50, 0x44, 0x46]), // %PDF
+            [".jpg"] = new(["image/jpeg"], MaxFileSizeBytes, ContentValidationStrategy.MagicBytes, [0xFF, 0xD8, 0xFF]),
+            [".jpeg"] = new(["image/jpeg"], MaxFileSizeBytes, ContentValidationStrategy.MagicBytes, [0xFF, 0xD8, 0xFF]),
+            [".png"] = new(["image/png"], MaxFileSizeBytes, ContentValidationStrategy.MagicBytes, [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]),
+            [".xml"] = new(["text/xml", "application/xml"], MaxXmlFileSizeBytes, ContentValidationStrategy.Xml)
+        };
 
     public DocumentsController(
         DocumentService documentService,
@@ -108,7 +115,7 @@ public class DocumentsController : ControllerBase
                 DefaultOrganizationId,
                 ct);
 
-            var cost = CreditPricing.ResolveCost(dto.ContentType, _creditOptions);
+            var cost = CreditPricing.ResolveCost(dto.ContentType, dto.OriginalFileName, _creditOptions);
             bool consumed;
             try
             {
@@ -119,6 +126,7 @@ public class DocumentsController : ControllerBase
             {
                 _logger.LogWarning(
                     "Not enqueuing document {DocumentId}: {Message}", dto.Id, ex.Message);
+                await _documentService.MarkBlockedByCreditAsync(dto.Id, DefaultOrganizationId, ex.Message, ct);
                 return new UploadFileResult
                 {
                     FileName = file.FileName,
@@ -129,14 +137,18 @@ public class DocumentsController : ControllerBase
 
             if (!consumed)
             {
+                var balance = await _creditService.GetBalanceAsync(DefaultOrganizationId, ct);
+                var message = $"Không đủ credit (còn {balance}). Nạp thêm để tiếp tục xử lý.";
+
                 _logger.LogWarning(
                     "Not enqueuing document {DocumentId}: organization {OrganizationId} has insufficient credit balance for {Cost} credit(s)",
                     dto.Id, DefaultOrganizationId, cost);
+                await _documentService.MarkBlockedByCreditAsync(dto.Id, DefaultOrganizationId, message, ct);
                 return new UploadFileResult
                 {
                     FileName = file.FileName,
                     Success = false,
-                    Error = "Insufficient credit balance. Please top up to continue."
+                    Error = message
                 };
             }
 
@@ -241,17 +253,28 @@ public class DocumentsController : ControllerBase
         // has no file-storage cost to slow an attacker down), so it must charge credit before
         // enqueuing exactly like Upload does — otherwise it's an unlimited-retries burn loop
         // bounded only by the per-IP rate limiter, not by the org's actual credit balance.
-        var cost = CreditPricing.ResolveCost(doc.ContentType, _creditOptions);
-        var consumed = await _creditService.TryConsumeAsync(
-            DefaultOrganizationId, cost, "Document", id, "Manual reprocess", ct);
+        var cost = CreditPricing.ResolveCost(doc.ContentType, doc.OriginalFileName, _creditOptions);
+        bool consumed;
+        try
+        {
+            consumed = await _creditService.TryConsumeAsync(
+                DefaultOrganizationId, cost, "Document", id, "Manual reprocess", ct);
+        }
+        catch (DailyCreditCapExceededException ex)
+        {
+            _logger.LogWarning("Not re-enqueuing document {DocumentId}: {Message}", id, ex.Message);
+            return StatusCode(StatusCodes.Status402PaymentRequired, new { error = ex.Message });
+        }
 
         if (!consumed)
         {
+            var balance = await _creditService.GetBalanceAsync(DefaultOrganizationId, ct);
+            var message = $"Không đủ credit (còn {balance}). Nạp thêm để tiếp tục xử lý.";
+
             _logger.LogWarning(
                 "Not re-enqueuing document {DocumentId}: organization {OrganizationId} has insufficient credit balance for {Cost} credit(s)",
                 id, DefaultOrganizationId, cost);
-            return StatusCode(StatusCodes.Status402PaymentRequired,
-                new { error = "Insufficient credit balance. Please top up to continue." });
+            return StatusCode(StatusCodes.Status402PaymentRequired, new { error = message });
         }
 
         await _documentService.MarkUploadedForProcessingAsync(id, DefaultOrganizationId, ct);
@@ -294,59 +317,62 @@ public class DocumentsController : ControllerBase
         return File(stream, contentType);
     }
 
-    private static bool IsXmlContentType(string contentType) =>
-        string.Equals(contentType, "text/xml", StringComparison.OrdinalIgnoreCase)
-        || string.Equals(contentType, "application/xml", StringComparison.OrdinalIgnoreCase);
-
-    private static long GetMaxFileSizeBytes(string contentType) =>
-        IsXmlContentType(contentType) ? MaxXmlFileSizeBytes : MaxFileSizeBytes;
-
     private static string? ValidateUpload(IFormFile file)
     {
         if (file.Length == 0)
             return "File is empty.";
 
-        if (file.Length > GetMaxFileSizeBytes(file.ContentType))
+        var extension = Path.GetExtension(file.FileName);
+        if (string.IsNullOrWhiteSpace(extension) || !AllowedUploads.TryGetValue(extension, out var rule))
+            return $"File extension '{extension}' is not supported. Allowed: XML, PDF, JPG, PNG.";
+
+        if (file.Length > rule.MaxSizeBytes)
         {
-            return IsXmlContentType(file.ContentType)
+            return rule.Strategy == ContentValidationStrategy.Xml
                 ? "File exceeds the 5 MB limit for XML invoices."
                 : "File exceeds the 20 MB limit.";
         }
 
-        if (!AllowedExtensionsByContentType.TryGetValue(file.ContentType, out var allowedExtensions))
-            return $"File type '{file.ContentType}' is not supported. Allowed: PDF, JPEG, PNG, XML.";
-
-        var extension = Path.GetExtension(file.FileName);
-        if (string.IsNullOrWhiteSpace(extension)
-            || !allowedExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase))
+        // Content-Type is only a secondary cross-check against the extension, never the primary
+        // key: an empty value or the generic "application/octet-stream" (both common for .xml,
+        // depending on the uploading browser/OS) are treated as "unknown" and skipped rather
+        // than rejected. A non-empty, specific value that doesn't match the extension is still
+        // rejected — that combination is either a spoofed upload or a genuine user mistake.
+        if (!string.IsNullOrWhiteSpace(file.ContentType)
+            && !string.Equals(file.ContentType, "application/octet-stream", StringComparison.OrdinalIgnoreCase)
+            && !rule.AcceptableContentTypes.Contains(file.ContentType, StringComparer.OrdinalIgnoreCase))
         {
-            return $"File extension '{extension}' does not match content type '{file.ContentType}'.";
+            return $"Content type '{file.ContentType}' does not match file extension '{extension}'.";
         }
 
         return null;
     }
 
-    // Each supported content type gets its own validation strategy: magic bytes for the binary
+    // Each supported extension gets its own validation strategy: magic bytes for the binary
     // formats, and a bounded well-formedness/root-element check for XML (which has no fixed
-    // magic bytes). Dispatching explicitly here — instead of indexing a single shared map —
-    // avoids a KeyNotFoundException for any content type that doesn't have magic bytes.
-    private static async Task<string?> ValidateFileSignatureAsync(IFormFile file, CancellationToken ct) =>
-        IsXmlContentType(file.ContentType)
-            ? await ValidateXmlRootElementAsync(file, ct)
-            : await ValidateMagicBytesAsync(file, ct);
-
-    private static async Task<string?> ValidateMagicBytesAsync(IFormFile file, CancellationToken ct)
+    // magic bytes). ValidateUpload already guarantees the extension is a key in AllowedUploads
+    // by the time this runs, but TryGetValue is still used defensively — an indexer here could
+    // otherwise throw KeyNotFoundException for any extension without a magic-byte entry.
+    private static async Task<string?> ValidateFileSignatureAsync(IFormFile file, CancellationToken ct)
     {
-        // ValidateUpload already guarantees file.ContentType is a key in this map for every
-        // non-XML content type it allows.
-        var signature = MagicBytesByContentType[file.ContentType];
+        var extension = Path.GetExtension(file.FileName);
+        if (!AllowedUploads.TryGetValue(extension, out var rule))
+            return $"File extension '{extension}' is not supported.";
 
+        return rule.Strategy == ContentValidationStrategy.Xml
+            ? await ValidateXmlRootElementAsync(file, ct)
+            : await ValidateMagicBytesAsync(file, rule.MagicBytes!, extension, ct);
+    }
+
+    private static async Task<string?> ValidateMagicBytesAsync(
+        IFormFile file, byte[] signature, string extension, CancellationToken ct)
+    {
         var header = new byte[signature.Length];
         await using var stream = file.OpenReadStream();
         var bytesRead = await stream.ReadAsync(header.AsMemory(0, header.Length), ct);
 
         if (bytesRead < signature.Length || !header.AsSpan(0, signature.Length).SequenceEqual(signature))
-            return $"File does not match the expected format for '{file.ContentType}'.";
+            return $"File content does not match the expected format for '{extension}'.";
 
         return null;
     }

@@ -9,8 +9,18 @@ interface Props {
   onUploaded: (results: UploadFileResult[]) => void;
 }
 
-const allowedTypes = ['application/pdf', 'image/jpeg', 'image/png'];
+const allowedTypes = ['application/pdf', 'image/jpeg', 'image/png', 'text/xml', 'application/xml'];
 const maxFileSizeBytes = 20 * 1024 * 1024;
+const maxXmlFileSizeBytes = 5 * 1024 * 1024;
+
+const hasXmlExtension = (file: File) => file.name.toLowerCase().endsWith('.xml');
+
+// Browsers/OSes report inconsistent (or empty) MIME types for .xml, so an empty type is
+// accepted based on extension alone — the server re-validates the actual file content anyway.
+const isAllowedType = (file: File) =>
+  allowedTypes.includes(file.type) || (file.type === '' && hasXmlExtension(file));
+
+const maxSizeFor = (file: File) => (hasXmlExtension(file) ? maxXmlFileSizeBytes : maxFileSizeBytes);
 
 export function UploadZone({ clientProfiles, onUploaded }: Props) {
   const [isDragging, setIsDragging] = useState(false);
@@ -29,12 +39,12 @@ export function UploadZone({ clientProfiles, onUploaded }: Props) {
       // client-side, but one bad file must not block the valid ones in the
       // same batch from being uploaded.
       const skipped = fileList.filter(
-        (file) => !allowedTypes.includes(file.type) || file.size > maxFileSizeBytes
+        (file) => !isAllowedType(file) || file.size > maxSizeFor(file)
       );
       const toUpload = fileList.filter((file) => !skipped.includes(file));
 
       if (toUpload.length === 0) {
-        setError('Use PDF, JPG, or PNG files up to 20 MB each.');
+        setError('Use XML, PDF, JPG, or PNG files (XML up to 5 MB, others up to 20 MB each).');
         return;
       }
 
@@ -42,7 +52,7 @@ export function UploadZone({ clientProfiles, onUploaded }: Props) {
       setProgress(0);
       setError(
         skipped.length > 0
-          ? `Skipped ${skipped.length} file(s): must be PDF, JPG, or PNG up to 20 MB.`
+          ? `Skipped ${skipped.length} file(s): must be XML, PDF, JPG, or PNG (XML up to 5 MB, others up to 20 MB).`
           : null
       );
 
@@ -55,7 +65,7 @@ export function UploadZone({ clientProfiles, onUploaded }: Props) {
           setError(
             [
               skipped.length > 0
-                ? `Skipped ${skipped.length} file(s): must be PDF, JPG, or PNG up to 20 MB.`
+                ? `Skipped ${skipped.length} file(s): must be XML, PDF, JPG, or PNG (XML up to 5 MB, others up to 20 MB).`
                 : null,
               `${failed.length} of ${response.data.length} file(s) failed: ` +
                 failed.map((result) => `${result.fileName} (${result.error})`).join('; '),
@@ -123,7 +133,7 @@ export function UploadZone({ clientProfiles, onUploaded }: Props) {
           ref={inputRef}
           type="file"
           multiple
-          accept=".pdf,.jpg,.jpeg,.png"
+          accept=".pdf,.jpg,.jpeg,.png,.xml"
           onChange={(event) => handleFiles(event.target.files)}
         />
 
@@ -131,11 +141,15 @@ export function UploadZone({ clientProfiles, onUploaded }: Props) {
           <UploadIcon size={22} />
         </span>
         <strong>Drop documents here or click to choose files</strong>
-        <span>Maximum 20 MB per file.</span>
+        <span>XML up to 5 MB, other formats up to 20 MB per file.</span>
         <span className="chip-row">
+          <span className="chip">XML</span>
           <span className="chip">PDF</span>
           <span className="chip">JPG</span>
           <span className="chip">PNG</span>
+        </span>
+        <span className="upload-zone-hint">
+          Ưu tiên tải file XML hóa đơn điện tử — chính xác 100% và miễn phí
         </span>
 
         {uploading && (

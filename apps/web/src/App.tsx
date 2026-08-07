@@ -189,7 +189,7 @@ export default function App() {
                     <UploadIcon size={18} />
                     Upload Documents
                   </h2>
-                  <span className="chip">PDF · JPG · PNG</span>
+                  <span className="chip">XML · PDF · JPG · PNG</span>
                 </div>
                 <UploadZone clientProfiles={clientProfiles} onUploaded={handleUploaded} />
               </section>

@@ -460,6 +460,11 @@ textarea:focus {
   font-size: 13.5px;
 }
 
+.upload-zone-hint {
+  color: var(--color-primary) !important;
+  font-weight: 600;
+}
+
 .progress {
   position: relative;
   width: min(360px, 90%);

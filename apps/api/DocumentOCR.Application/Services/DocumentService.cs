@@ -339,6 +339,24 @@ public class DocumentService
         await _db.SaveChangesAsync(ct);
     }
 
+    /// <summary>
+    /// Records why a just-uploaded document was never enqueued for processing (insufficient
+    /// credit balance / daily cap) directly on the persisted row, so it survives past the
+    /// upload response — the document otherwise looks identical to a normal "just uploaded, not
+    /// yet processed" row (<see cref="DocumentStatus.Uploaded"/>, no <see cref="Document.ErrorMessage"/>)
+    /// and the frontend has no way to distinguish the two.
+    /// </summary>
+    public async Task MarkBlockedByCreditAsync(Guid documentId, Guid organizationId, string message, CancellationToken ct = default)
+    {
+        var doc = await _db.Documents
+            .FirstOrDefaultAsync(d => d.Id == documentId && d.OrganizationId == organizationId, ct)
+            ?? throw new KeyNotFoundException($"Document {documentId} not found.");
+
+        doc.ErrorMessage = message;
+        doc.UpdatedAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync(ct);
+    }
+
     public async Task UpdateFieldsAsync(Guid documentId, Guid organizationId, UpdateFieldsRequest request, CancellationToken ct = default)
     {
         var doc = await _db.Documents

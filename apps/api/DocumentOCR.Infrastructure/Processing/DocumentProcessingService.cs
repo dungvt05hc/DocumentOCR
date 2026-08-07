@@ -22,7 +22,7 @@ namespace DocumentOCR.Infrastructure.Processing;
 /// </summary>
 public class DocumentProcessingService : IDocumentProcessingService
 {
-    private const string StructuredInvoiceProviderName = "TT78Xml";
+    private const string StructuredInvoiceProviderName = CreditPricing.StructuredXmlProviderName;
 
     private readonly IApplicationDbContext _db;
     private readonly IDocumentStorageService _storage;
@@ -101,7 +101,22 @@ public class DocumentProcessingService : IDocumentProcessingService
 
             await using var fileStream = await _storage.GetStreamAsync(document.StoredFilePath, ct);
 
-            if (_structuredInvoiceParser.CanParse(document.ContentType, document.OriginalFileName))
+            var useStructuredParser = _structuredInvoiceParser.CanParse(document.ContentType, document.OriginalFileName);
+            var selectedProviderName = useStructuredParser ? StructuredInvoiceProviderName : _ocrProvider.ProviderName;
+
+            // Permanent diagnostic log (not temporary) — the single place that records which
+            // branch/provider a given upload actually took, so a stuck-in-Processing report can
+            // be traced back to "which path did this take" without guessing.
+            _logger.LogInformation(
+                "Processing branch selected for document {DocumentId} ({FileName}, ContentType={ContentType}): " +
+                "{Branch} via provider {ProviderName}",
+                documentId,
+                document.OriginalFileName,
+                document.ContentType,
+                useStructuredParser ? "StructuredXml" : "Ocr",
+                selectedProviderName);
+
+            if (useStructuredParser)
                 await ProcessStructuredInvoiceAsync(document, fileStream, ct);
             else
                 await ProcessViaOcrAsync(document, fileStream, ct);
@@ -110,21 +125,41 @@ public class DocumentProcessingService : IDocumentProcessingService
         {
             _logger.LogError(ex, "Processing failed for document {DocumentId}", documentId);
 
+            await MarkFailedAsync(
+                documentId, "Document processing failed unexpectedly. Please retry or contact support.", CancellationToken.None);
+
+            await RefundProcessingCreditsAsync(document, CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// Records a permanent processing failure for <paramref name="documentId"/>, robust to the
+    /// triggering exception having left <see cref="_db"/>'s change tracker holding invalid state
+    /// (e.g. a child row that failed a unique-constraint insert) — <see cref="ChangeTracker.Clear"/>
+    /// discards all of that before this targeted, minimal update, so this save can't fail for the
+    /// same reason the original one did. Without this, a save failure here used to be logged and
+    /// swallowed, leaving the document stuck in <see cref="DocumentStatus.Processing"/> forever —
+    /// Hangfire still saw the job return normally, since <see cref="ProcessAsync"/> never rethrows.
+    /// </summary>
+    private async Task MarkFailedAsync(Guid documentId, string errorMessage, CancellationToken ct)
+    {
+        try
+        {
+            _db.ChangeTracker.Clear();
+
+            var document = await _db.Documents.FirstOrDefaultAsync(d => d.Id == documentId, ct);
+            if (document is null) return;
+
             document.Status = DocumentStatus.Failed;
-            document.ErrorMessage = "Document processing failed unexpectedly. Please retry or contact support.";
+            document.ErrorMessage = errorMessage;
             document.ProcessingCompletedAt = DateTime.UtcNow;
             document.UpdatedAt = DateTime.UtcNow;
 
-            try
-            {
-                await _db.SaveChangesAsync(CancellationToken.None);
-            }
-            catch (Exception saveEx)
-            {
-                _logger.LogError(saveEx, "Failed to save failure status for document {DocumentId}", documentId);
-            }
-
-            await RefundProcessingCreditsAsync(document, CancellationToken.None);
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (Exception saveEx)
+        {
+            _logger.LogError(saveEx, "Failed to save failure status for document {DocumentId}", documentId);
         }
     }
 
@@ -145,7 +180,7 @@ public class DocumentProcessingService : IDocumentProcessingService
             _ocrProvider.ProviderName,
             documentId);
 
-        var ocrResult = await _ocrProvider.AnalyzeAsync(ocrInput, ct);
+        var ocrResult = await AnalyzeWithTimeoutAsync(ocrInput, documentId, ct);
 
         _logger.LogInformation(
             "OCR provider {ProviderName} (Model={ModelId}) completed for document {DocumentId}. Success={Success}, Pages={PageCount}, DurationMs={ProcessingTimeMs}, EstimatedCost={EstimatedCost}",
@@ -199,6 +234,8 @@ public class DocumentProcessingService : IDocumentProcessingService
             return;
         }
 
+        await RefundFreePathDifferenceAsync(document, ocrResult.ProviderName, ct);
+
         foreach (var page in ocrResult.Pages)
         {
             _db.DocumentPages.Add(new DocumentPage
@@ -244,6 +281,42 @@ public class DocumentProcessingService : IDocumentProcessingService
             document.PageCount,
             extractedFields.Count,
             warnings.Count);
+    }
+
+    /// <summary>
+    /// Hard pipeline-level ceiling (<see cref="OcrOptions.CallTimeoutSeconds"/>, default 120s) on
+    /// a single <see cref="IDocumentOcrProvider.AnalyzeAsync"/> call, independent of whatever
+    /// timeout (if any) the provider enforces internally -- so a provider that hangs, or a future
+    /// provider that forgets its own timeout, can never leave a document stuck in
+    /// <see cref="DocumentStatus.Processing"/> forever. On expiry this returns a synthetic failed
+    /// result rather than throwing, so the normal "!ocrResult.Success" handling in
+    /// <see cref="ProcessViaOcrAsync"/> (Failed status + refund) takes care of the rest.
+    /// </summary>
+    private async Task<NormalizedOcrDocument> AnalyzeWithTimeoutAsync(
+        DocumentInput input, Guid documentId, CancellationToken ct)
+    {
+        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(_ocrOptions.CallTimeoutSeconds));
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+
+        try
+        {
+            return await _ocrProvider.AnalyzeAsync(input, linkedCts.Token);
+        }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            _logger.LogError(
+                "OCR provider {ProviderName} did not respond within {TimeoutSeconds}s for document {DocumentId}.",
+                _ocrProvider.ProviderName, _ocrOptions.CallTimeoutSeconds, documentId);
+
+            return new NormalizedOcrDocument
+            {
+                Success = false,
+                ProviderName = _ocrProvider.ProviderName,
+                ErrorMessage =
+                    $"OCR provider {_ocrProvider.ProviderName} did not respond within " +
+                    $"{_ocrOptions.CallTimeoutSeconds}s."
+            };
+        }
     }
 
     private async Task ProcessStructuredInvoiceAsync(Document document, Stream fileStream, CancellationToken ct)
@@ -392,7 +465,7 @@ public class DocumentProcessingService : IDocumentProcessingService
     /// </summary>
     private async Task RefundProcessingCreditsAsync(Document document, CancellationToken ct)
     {
-        var amount = CreditPricing.ResolveCost(document.ContentType, _creditOptions);
+        var amount = CreditPricing.ResolveCost(document.ContentType, document.OriginalFileName, _creditOptions);
         try
         {
             await _creditService.RefundAsync(
@@ -402,6 +475,37 @@ public class DocumentProcessingService : IDocumentProcessingService
         {
             _logger.LogError(
                 ex, "Failed to refund {Amount} credit(s) for permanently failed document {DocumentId}", amount, document.Id);
+        }
+    }
+
+    /// <summary>
+    /// Whether a PDF ends up served for free (<c>PdfTextLayer</c>, reading the PDF's own embedded
+    /// text layer) or via paid OCR is only known once <see cref="IDocumentOcrProvider"/> has
+    /// actually run — unlike XML, which is priced free from the pre-charge at upload/reprocess
+    /// time (see <see cref="CreditPricing.ResolveCost"/>). So the upload/reprocess charge point
+    /// always holds the worst-case (OCR) price up front — preserving the pre-charge burn-loop
+    /// defense — and this reconciles it down to the true price after the fact, refunding the
+    /// difference when the actual provider turned out to be free.
+    /// </summary>
+    private async Task RefundFreePathDifferenceAsync(Document document, string actualProviderName, CancellationToken ct)
+    {
+        var preChargedAmount = CreditPricing.ResolveCost(document.ContentType, document.OriginalFileName, _creditOptions);
+        var actualAmount = CreditPricing.ResolveActualCost(actualProviderName, _creditOptions);
+        if (actualAmount >= preChargedAmount)
+            return;
+
+        var refundAmount = preChargedAmount - actualAmount;
+        try
+        {
+            await _creditService.RefundAsync(
+                document.OrganizationId, refundAmount, "Document", document.Id,
+                $"Free processing path used ({actualProviderName})", ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex, "Failed to refund {Amount} credit(s) for document {DocumentId} after free path ({ProviderName})",
+                refundAmount, document.Id, actualProviderName);
         }
     }
 

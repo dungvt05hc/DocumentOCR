@@ -196,6 +196,52 @@ public class DocumentLifecycleTests : IClassFixture<CustomWebApplicationFactory>
         Assert.False(string.IsNullOrWhiteSpace(uploadResult.Error));
     }
 
+    [Theory]
+    [InlineData("text/xml")]
+    [InlineData("application/xml")]
+    [InlineData("application/octet-stream")]
+    [InlineData(null)] // browsers/OSes sometimes send no Content-Type header at all for .xml
+    public async Task Upload_ValidXmlWithVariousContentTypes_Succeeds(string? contentType)
+    {
+        var client = _factory.CreateClient();
+
+        var xmlBytes = await File.ReadAllBytesAsync(
+            Path.Combine(AppContext.BaseDirectory, "Fixtures", "tt78", "valid-invoice.xml"));
+
+        using var uploadContent = new MultipartFormDataContent();
+        var fileContent = new ByteArrayContent(xmlBytes);
+        if (contentType is not null)
+            fileContent.Headers.ContentType = new MediaTypeHeaderValue(contentType);
+        uploadContent.Add(fileContent, "files", "invoice.xml");
+
+        var uploadResponse = await client.PostAsync("/api/documents/upload", uploadContent);
+
+        Assert.Equal(HttpStatusCode.Accepted, uploadResponse.StatusCode);
+        var uploadResults = await uploadResponse.Content.ReadFromJsonAsync<List<UploadFileResult>>(JsonOptions);
+        var uploadResult = Assert.Single(uploadResults!);
+        Assert.True(uploadResult.Success, uploadResult.Error);
+    }
+
+    [Fact]
+    public async Task Upload_PdfRenamedToXmlExtension_IsRejected()
+    {
+        var client = _factory.CreateClient();
+
+        using var uploadContent = new MultipartFormDataContent();
+        var fileBytes = new byte[] { 0x25, 0x50, 0x44, 0x46, 0x2D, 0x31, 0x2E, 0x34 }; // %PDF-1.4
+        var fileContent = new ByteArrayContent(fileBytes);
+        fileContent.Headers.ContentType = new MediaTypeHeaderValue("text/xml");
+        uploadContent.Add(fileContent, "files", "invoice.xml");
+
+        var uploadResponse = await client.PostAsync("/api/documents/upload", uploadContent);
+
+        Assert.Equal(HttpStatusCode.Accepted, uploadResponse.StatusCode);
+        var uploadResults = await uploadResponse.Content.ReadFromJsonAsync<List<UploadFileResult>>(JsonOptions);
+        var uploadResult = Assert.Single(uploadResults!);
+        Assert.False(uploadResult.Success);
+        Assert.False(string.IsNullOrWhiteSpace(uploadResult.Error));
+    }
+
     [Fact]
     public async Task GetById_UnknownDocument_ReturnsNotFound()
     {

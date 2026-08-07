@@ -84,7 +84,7 @@ public class CreditLedgerConcurrencyTests : IAsyncLifetime
         await TopUpAsync(100);
 
         await using var db = CreateDbContext();
-        var service = CreateService(db, new CreditOptions { MaxDailyConsumePerOrg = 5 });
+        var service = CreateService(db, new CreditOptions { Enabled = true, MaxDailyConsumePerOrg = 5 });
 
         await Assert.ThrowsAsync<DailyCreditCapExceededException>(
             () => service.TryConsumeAsync(_organizationId, 10, "Document", Guid.NewGuid()));
@@ -128,8 +128,10 @@ public class CreditLedgerConcurrencyTests : IAsyncLifetime
         return await CreateService(db).GetBalanceAsync(_organizationId);
     }
 
+    // Enabled=true explicitly: these tests exercise the charging engine itself, so they must opt
+    // into it regardless of CreditOptions.Enabled's development-friendly default of false.
     private static CreditService CreateService(ApplicationDbContext db, CreditOptions? options = null) =>
-        new(db, Options.Create(options ?? new CreditOptions()), NullLogger<CreditService>.Instance);
+        new(db, Options.Create(options ?? new CreditOptions { Enabled = true }), NullLogger<CreditService>.Instance);
 
     private ApplicationDbContext CreateDbContext()
     {
