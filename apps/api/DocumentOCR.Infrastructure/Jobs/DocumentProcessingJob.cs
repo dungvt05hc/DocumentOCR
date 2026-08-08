@@ -38,6 +38,11 @@ public class DocumentProcessingJob
             _logger.LogInformation("Auto-assigned a client profile to document {Id}", documentId);
         }
 
+        // Direction depends on whichever client ended up assigned above (auto or manual from an
+        // earlier run), so it always runs after — never before — the auto-assign step.
+        var direction = await _clientAutoSuggest.InferDirectionAsync(documentId);
+        _logger.LogInformation("Inferred direction {Direction} for document {Id}", direction, documentId);
+
         _logger.LogInformation("Background job completed for document {Id}", documentId);
     }
 }

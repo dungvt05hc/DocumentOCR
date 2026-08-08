@@ -17,6 +17,7 @@ public class DocumentReviewResponse
 
     public DocumentStatus Status { get; set; }
     public DocumentCategory DocumentCategory { get; set; }
+    public DocumentDirection Direction { get; set; }
 
     /// <summary>The underlying legacy-pipeline <c>DocumentType</c>, for visibility even after collapsing to the coarser category.</summary>
     public string? DocumentSubType { get; set; }
@@ -34,6 +35,9 @@ public class DocumentReviewResponse
 
     /// <summary>Basic candidate line items derived from <see cref="Tables"/> — not guaranteed, not persisted. See <see cref="ReviewLineItem"/>.</summary>
     public List<ReviewLineItem> LineItems { get; set; } = new();
+
+    /// <summary>Per-VAT-rate breakdown lines (<c>InvoiceTaxBreakdown</c>), ordered by <see cref="ReviewTaxBreakdownRow.SortOrder"/>. Empty when the document has none yet.</summary>
+    public List<ReviewTaxBreakdownRow> TaxBreakdown { get; set; } = new();
 
     /// <summary>Populated only when <c>OcrDebug:Enabled</c> is on — a lightweight debug summary. The fuller version (lines/paragraphs/key-value pairs) is served by <c>GET /api/documents/{id}/ocr-debug</c>.</summary>
     public OcrDebugData? DebugData { get; set; }
@@ -92,4 +96,16 @@ public class ReviewWarningDto
     public string? FieldKey { get; set; }
     public string? WarningCode { get; set; }
     public string Message { get; set; } = string.Empty;
+}
+
+/// <summary>One editable row of <c>InvoiceTaxBreakdown</c> — rendered as a multi-row table, not a flat field.</summary>
+public class ReviewTaxBreakdownRow
+{
+    public Guid Id { get; set; }
+    public string? RawVatRate { get; set; }
+    public string? VatRate { get; set; }
+    public decimal? TaxableAmount { get; set; }
+    public decimal? TaxAmount { get; set; }
+    public double? Confidence { get; set; }
+    public int SortOrder { get; set; }
 }

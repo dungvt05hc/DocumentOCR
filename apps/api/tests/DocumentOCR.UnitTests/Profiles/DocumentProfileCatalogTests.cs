@@ -49,6 +49,29 @@ public class DocumentProfileCatalogTests
         Assert.False(_sut.GetProfile(DocumentCategory.VatInvoice).IsExperimental);
     }
 
+    [Fact]
+    public void GetProfile_VatInvoice_HasExactlyFourVietnameseLayoutClusters()
+    {
+        var profile = _sut.GetProfile(DocumentCategory.VatInvoice);
+
+        Assert.Equal(
+            ["invoice", "seller", "buyer", "amounts"],
+            profile.Sections.OrderBy(s => s.DisplayOrder).Select(s => s.SectionKey));
+        Assert.Equal(
+            ["Thông tin hoá đơn", "Người bán", "Người mua", "Số tiền"],
+            profile.Sections.OrderBy(s => s.DisplayOrder).Select(s => s.Title));
+    }
+
+    [Fact]
+    public void GetProfile_VatInvoice_DoesNotDefineAFlatVatRateField()
+    {
+        // VatRate moved to the per-line InvoiceTaxBreakdown table (see
+        // DocumentReviewResponse.TaxBreakdown) — it must not also exist as a flat profile field.
+        var profile = _sut.GetProfile(DocumentCategory.VatInvoice);
+
+        Assert.DoesNotContain(profile.Sections.SelectMany(s => s.Fields), f => f.FieldKey == "VatRate");
+    }
+
     [Theory]
     [InlineData("VatInvoice", DocumentCategory.VatInvoice)]
     [InlineData("AppReceiptScreenshot", DocumentCategory.AppReceiptScreenshot)]

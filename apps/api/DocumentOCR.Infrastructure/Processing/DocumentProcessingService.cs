@@ -10,6 +10,7 @@ using DocumentOCR.Infrastructure.Ocr;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Npgsql;
 
 namespace DocumentOCR.Infrastructure.Processing;
 
@@ -68,6 +69,7 @@ public class DocumentProcessingService : IDocumentProcessingService
             .Include(d => d.Pages)
             .Include(d => d.Fields)
             .Include(d => d.ValidationWarnings)
+            .Include(d => d.TaxBreakdowns)
             .FirstOrDefaultAsync(d => d.Id == documentId, ct);
 
         if (document is null)
@@ -90,7 +92,7 @@ public class DocumentProcessingService : IDocumentProcessingService
         document.UpdatedAt = DateTime.UtcNow;
 
         RemoveStaleProcessingArtifacts(document);
-        await _db.SaveChangesAsync(ct);
+        await SaveChangesWithDiagnosticsAsync(documentId, "ProcessAsync:InitialStatusSave", ct);
 
         try
         {
@@ -159,7 +161,61 @@ public class DocumentProcessingService : IDocumentProcessingService
         }
         catch (Exception saveEx)
         {
-            _logger.LogError(saveEx, "Failed to save failure status for document {DocumentId}", documentId);
+            if (saveEx is DbUpdateException dbEx)
+                LogSaveChangesFailure(documentId, "MarkFailedAsync", dbEx);
+            else
+                _logger.LogError(saveEx, "Failed to save failure status for document {DocumentId}", documentId);
+        }
+    }
+
+    /// <summary>
+    /// Wraps <see cref="_db"/>.SaveChangesAsync with diagnostics that a bare try/catch around
+    /// SaveChangesAsync doesn't give you for free: which entities/rows were being written and,
+    /// for a Postgres constraint violation, the actual constraint name and detail (buried in
+    /// <see cref="DbUpdateException.InnerException"/>, not the outer exception's message). Logs
+    /// then rethrows unchanged — <see cref="ProcessAsync"/>'s outer catch is still what decides
+    /// Status=Failed and triggers the credit refund.
+    /// </summary>
+    private async Task SaveChangesWithDiagnosticsAsync(Guid documentId, string stage, CancellationToken ct)
+    {
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex)
+        {
+            LogSaveChangesFailure(documentId, stage, ex);
+            throw;
+        }
+    }
+
+    private void LogSaveChangesFailure(Guid documentId, string stage, DbUpdateException ex)
+    {
+        var entries = string.Join(", ", ex.Entries.Select(e => $"{e.Entity.GetType().Name}[{e.State}]"));
+
+        if (ex.InnerException is PostgresException pgEx)
+        {
+            _logger.LogError(
+                ex,
+                "SaveChanges failed for document {DocumentId} at stage '{Stage}'. " +
+                "Postgres {SqlState} on constraint '{ConstraintName}' (table '{Table}'): {Detail}. Entries: {Entries}",
+                documentId,
+                stage,
+                pgEx.SqlState,
+                pgEx.ConstraintName,
+                pgEx.TableName,
+                pgEx.Detail,
+                entries);
+        }
+        else
+        {
+            _logger.LogError(
+                ex,
+                "SaveChanges failed for document {DocumentId} at stage '{Stage}'. Inner exception: {InnerMessage}. Entries: {Entries}",
+                documentId,
+                stage,
+                ex.InnerException?.Message ?? ex.Message,
+                entries);
         }
     }
 
@@ -221,7 +277,7 @@ public class DocumentProcessingService : IDocumentProcessingService
             document.ProcessingCompletedAt = DateTime.UtcNow;
             document.UpdatedAt = DateTime.UtcNow;
 
-            await _db.SaveChangesAsync(ct);
+            await SaveChangesWithDiagnosticsAsync(documentId, "ProcessViaOcrAsync:FailureSave", ct);
 
             _logger.LogWarning(
                 "Document {DocumentId} marked Failed because OCR provider {ProviderName} returned an unsuccessful result: {ErrorMessage}",
@@ -258,20 +314,30 @@ public class DocumentProcessingService : IDocumentProcessingService
 
         _normalization.NormalizeFields(extractedFields);
 
-        foreach (var field in extractedFields)
+        // "VatRate" is a candidate-only key (see FieldExtractionService.AddVatRateLineCandidate) —
+        // consumed here to synthesize a tax-breakdown row, never persisted as an ExtractedField
+        // itself (no profile field references it, so it would otherwise land in "Other detected
+        // fields" for no reason).
+        var vatRateField = extractedFields.FirstOrDefault(f => f.FieldName == "VatRate");
+        var persistedFields = extractedFields.Where(f => f.FieldName != "VatRate").ToList();
+
+        foreach (var field in persistedFields)
             _db.ExtractedFields.Add(field);
 
-        var warnings = _validation.Validate(documentId, extractedFields);
+        foreach (var taxLine in BuildOcrTaxBreakdown(documentId, vatRateField, persistedFields))
+            _db.InvoiceTaxBreakdowns.Add(taxLine);
+
+        var warnings = _validation.Validate(documentId, persistedFields);
         foreach (var warning in warnings)
             _db.ValidationWarnings.Add(warning);
 
-        document.DocumentType = GetDetectedDocumentType(extractedFields);
+        document.DocumentType = GetDetectedDocumentType(persistedFields);
         document.Status = DocumentStatus.Processed;
         document.PageCount = ocrResult.PageCount;
         document.ProcessingCompletedAt = DateTime.UtcNow;
         document.UpdatedAt = DateTime.UtcNow;
 
-        await _db.SaveChangesAsync(ct);
+        await SaveChangesWithDiagnosticsAsync(documentId, "ProcessViaOcrAsync:FinalSave", ct);
 
         _logger.LogInformation(
             "Document {DocumentId} processed successfully. Status={Status}, DocumentType={DocumentType}, Pages={PageCount}, Fields={FieldCount}, Warnings={WarningCount}",
@@ -344,7 +410,7 @@ public class DocumentProcessingService : IDocumentProcessingService
             EstimatedCost = 0m,
             Success = parseResult.Success,
             ErrorMessage = parseResult.ErrorMessage,
-            RawResponseJson = _ocrOptions.StoreRawProviderResponse ? parseResult.RawXml : null,
+            RawResponseJson = _ocrOptions.StoreRawProviderResponse ? JsonSerializer.Serialize(parseResult.RawXml) : null,
             RawResponsePath = rawXmlPath
         });
 
@@ -357,7 +423,7 @@ public class DocumentProcessingService : IDocumentProcessingService
             document.ProcessingCompletedAt = DateTime.UtcNow;
             document.UpdatedAt = DateTime.UtcNow;
 
-            await _db.SaveChangesAsync(ct);
+            await SaveChangesWithDiagnosticsAsync(documentId, "ProcessStructuredInvoiceAsync:FailureSave", ct);
 
             _logger.LogWarning(
                 "Document {DocumentId} marked Failed because structured XML parsing failed: {ErrorMessage}",
@@ -378,6 +444,12 @@ public class DocumentProcessingService : IDocumentProcessingService
 
         _normalization.NormalizeFields(extractedFields);
 
+        foreach (var taxLine in parseResult.TaxBreakdown)
+        {
+            taxLine.DocumentId = documentId;
+            _db.InvoiceTaxBreakdowns.Add(taxLine);
+        }
+
         var warnings = _validation.Validate(documentId, extractedFields);
         foreach (var warning in warnings)
             _db.ValidationWarnings.Add(warning);
@@ -391,7 +463,7 @@ public class DocumentProcessingService : IDocumentProcessingService
         document.ProcessingCompletedAt = DateTime.UtcNow;
         document.UpdatedAt = DateTime.UtcNow;
 
-        await _db.SaveChangesAsync(ct);
+        await SaveChangesWithDiagnosticsAsync(documentId, "ProcessStructuredInvoiceAsync:FinalSave", ct);
 
         _logger.LogInformation(
             "Document {DocumentId} processed via structured XML parser. Status={Status}, DocumentType={DocumentType}, Fields={FieldCount}, Warnings={WarningCount}",
@@ -519,7 +591,48 @@ public class DocumentProcessingService : IDocumentProcessingService
 
         foreach (var warning in document.ValidationWarnings.ToList())
             _db.ValidationWarnings.Remove(warning);
+
+        foreach (var taxLine in document.TaxBreakdowns.ToList())
+            _db.InvoiceTaxBreakdowns.Remove(taxLine);
     }
+
+    /// <summary>
+    /// Synthesizes a single tax-breakdown row from the OCR pipeline's best-effort "VatRate" line
+    /// candidate plus whatever Subtotal/VAT amounts were already extracted — mirrors what TT78 XML
+    /// always gets deterministically from THTTLTSuat, but only when a document-level rate was
+    /// actually recognized; otherwise the document simply has no breakdown rows (not a fabricated
+    /// one at 0/unknown).
+    /// </summary>
+    private List<InvoiceTaxBreakdown> BuildOcrTaxBreakdown(
+        Guid documentId, ExtractedField? vatRateField, IReadOnlyList<ExtractedField> fields)
+    {
+        if (vatRateField is null) return [];
+
+        var normalizedRate = _normalization.NormalizeVatRate(vatRateField.RawValue);
+        if (normalizedRate is null) return [];
+
+        var subtotal = fields.FirstOrDefault(f => f.FieldName == nameof(FieldName.SubtotalAmount));
+        var vat = fields.FirstOrDefault(f => f.FieldName == nameof(FieldName.VatAmount));
+
+        return
+        [
+            new InvoiceTaxBreakdown
+            {
+                DocumentId = documentId,
+                RawVatRate = vatRateField.RawValue,
+                VatRate = normalizedRate,
+                TaxableAmount = ParseDecimalOrNull(subtotal?.NormalizedValue),
+                TaxAmount = ParseDecimalOrNull(vat?.NormalizedValue),
+                Confidence = vatRateField.Confidence,
+                SortOrder = 0
+            }
+        ];
+    }
+
+    private static decimal? ParseDecimalOrNull(string? value) =>
+        decimal.TryParse(value, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var result)
+            ? result
+            : null;
 
     private static DocumentType GetDetectedDocumentType(IEnumerable<ExtractedField> fields)
     {

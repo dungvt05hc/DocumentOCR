@@ -105,6 +105,7 @@ public class DocumentReviewMappingService
             ContentType = document.ContentType,
             Status = document.Status,
             DocumentCategory = category,
+            Direction = document.Direction,
             DocumentSubType = document.DocumentType.ToString(),
             ProviderName = latestLog?.ProviderName,
             ModelId = latestLog?.ModelId,
@@ -114,6 +115,19 @@ public class DocumentReviewMappingService
             Warnings = warnings,
             Tables = tables,
             LineItems = lineItems,
+            TaxBreakdown = document.TaxBreakdowns
+                .OrderBy(t => t.SortOrder)
+                .Select(t => new ReviewTaxBreakdownRow
+                {
+                    Id = t.Id,
+                    RawVatRate = t.RawVatRate,
+                    VatRate = t.VatRate,
+                    TaxableAmount = t.TaxableAmount,
+                    TaxAmount = t.TaxAmount,
+                    Confidence = t.Confidence,
+                    SortOrder = t.SortOrder
+                })
+                .ToList(),
             DebugData = includeDebugSummary ? BuildDebugSummary(document, latestLog, tables.Count) : null
         };
     }

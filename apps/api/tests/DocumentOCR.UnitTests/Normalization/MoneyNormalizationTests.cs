@@ -1,4 +1,6 @@
 using DocumentOCR.Application.Processing;
+using DocumentOCR.Domain.Entities;
+using DocumentOCR.Domain.Enums;
 using Xunit;
 
 namespace DocumentOCR.UnitTests.Normalization;
@@ -67,5 +69,26 @@ public class MoneyNormalizationTests
     {
         var result = _sut.NormalizeCurrencyCode(input);
         Assert.Equal("VND", result);
+    }
+
+    [Fact]
+    public void NormalizeFields_FieldAlreadyHasNormalizedValue_DoesNotOverwriteIt()
+    {
+        // A structured-XML-sourced field (e.g. TT78XmlInvoiceParser) computes its own
+        // NormalizedValue via invariant-culture decimal parsing before this method ever runs —
+        // the Vietnamese-text money regex must not reprocess and clobber it. RawValue below is
+        // deliberately something the regex would parse into a different (wrong) number, to prove
+        // the pre-set NormalizedValue wins.
+        var field = new ExtractedField
+        {
+            FieldName = nameof(FieldName.TotalAmount),
+            RawValue = "10019909.000000",
+            NormalizedValue = "10019909",
+            Confidence = 1.0
+        };
+
+        _sut.NormalizeFields([field]);
+
+        Assert.Equal("10019909", field.NormalizedValue);
     }
 }

@@ -1,13 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { downloadOriginal, getOcrDebug, updateFields } from '../services/api';
+import { downloadOriginal, getOcrDebug, setDocumentDirection, updateFields } from '../services/api';
 import type {
+  DocumentDirection,
   DocumentReviewResponse,
   FieldUpdateItem,
   OcrDebugResponse,
   ReviewLineItem,
   ReviewWarningDto,
   TableUpdateItem,
+  TaxBreakdownUpdateItem,
 } from '../types';
+import { DIRECTION_LABELS } from '../types';
 import { Alert } from './Alert';
 import { ChevronLeftIcon, SaveIcon } from './icons';
 import { ReviewWarningsBar } from './review/ReviewWarningsBar';
@@ -15,7 +18,21 @@ import { ReviewDetailsTab } from './review/ReviewDetailsTab';
 import { ReviewTablesTab } from './review/ReviewTablesTab';
 import { ReviewLineItemsTab } from './review/ReviewLineItemsTab';
 import { ReviewDebugPanel } from './review/ReviewDebugPanel';
+import { TaxBreakdownTable } from './review/TaxBreakdownTable';
+import type { TaxBreakdownRowState } from './review/TaxBreakdownTable';
 import { parseTableCellEditKey, tableCellEditKey } from './review/tableEditKey';
+
+let taxBreakdownRowSeq = 0;
+const nextTaxBreakdownRowKey = () => `new-${++taxBreakdownRowSeq}`;
+
+const toRowState = (row: DocumentReviewResponse['taxBreakdown'][number]): TaxBreakdownRowState => ({
+  key: row.id,
+  id: row.id,
+  vatRate: row.vatRate ?? '',
+  taxableAmount: row.taxableAmount?.toString() ?? '',
+  taxAmount: row.taxAmount?.toString() ?? '',
+  confidence: row.confidence,
+});
 
 interface Props {
   document: DocumentReviewResponse;
@@ -45,6 +62,12 @@ export function FieldEditor({ document: doc, onSaved, onBack }: Props) {
   // tableId -> "rowIndex|columnKey" -> edited text
   const [tableEdits, setTableEdits] = useState<Record<string, Record<string, string>>>({});
   const [lineItemEdits, setLineItemEdits] = useState<Record<number, Partial<ReviewLineItem>>>({});
+
+  const [taxBreakdownRows, setTaxBreakdownRows] = useState<TaxBreakdownRowState[]>(() =>
+    doc.taxBreakdown.slice().sort((a, b) => a.sortOrder - b.sortOrder).map(toRowState)
+  );
+  const [direction, setDirection] = useState<DocumentDirection>(doc.direction);
+  const [directionSaving, setDirectionSaving] = useState(false);
 
   const [ocrDebug, setOcrDebug] = useState<OcrDebugResponse | null>(null);
   const [ocrDebugLoading, setOcrDebugLoading] = useState(false);
@@ -123,6 +146,46 @@ export function FieldEditor({ document: doc, onSaved, onBack }: Props) {
     setLineItemEdits((current) => ({ ...current, [lineNumber]: { ...current[lineNumber], ...patch } }));
   };
 
+  const handleTaxBreakdownRowChange = (key: string, patch: Partial<TaxBreakdownRowState>) => {
+    setTaxBreakdownRows((current) => current.map((row) => (row.key === key ? { ...row, ...patch } : row)));
+  };
+
+  const handleAddTaxBreakdownRow = () => {
+    setTaxBreakdownRows((current) => [
+      ...current,
+      { key: nextTaxBreakdownRowKey(), id: null, vatRate: '', taxableAmount: '', taxAmount: '', confidence: null },
+    ]);
+  };
+
+  const handleRemoveTaxBreakdownRow = (key: string) => {
+    setTaxBreakdownRows((current) => current.filter((row) => row.key !== key));
+  };
+
+  const handleDirectionChange = async (value: DocumentDirection) => {
+    const previous = direction;
+    setDirection(value);
+    setDirectionSaving(true);
+    try {
+      await setDocumentDirection(doc.documentId, value);
+    } catch {
+      setDirection(previous);
+      setError('Failed to save direction.');
+    } finally {
+      setDirectionSaving(false);
+    }
+  };
+
+  const buildTaxBreakdownUpdates = (): TaxBreakdownUpdateItem[] =>
+    taxBreakdownRows
+      .filter((row) => row.vatRate || row.taxableAmount || row.taxAmount)
+      .map((row, index) => ({
+        id: row.id,
+        vatRate: row.vatRate || null,
+        taxableAmount: row.taxableAmount === '' ? null : Number(row.taxableAmount),
+        taxAmount: row.taxAmount === '' ? null : Number(row.taxAmount),
+        sortOrder: index,
+      }));
+
   const buildTableUpdates = (): TableUpdateItem[] =>
     Object.entries(tableEdits)
       .map(([tableId, edits]) => {
@@ -161,7 +224,12 @@ export function FieldEditor({ document: doc, onSaved, onBack }: Props) {
         currency: lineItemEdits[item.lineNumber]?.currency ?? item.currency,
       }));
 
-      await updateFields(doc.documentId, { fields: updates, tables: buildTableUpdates(), lineItems });
+      await updateFields(doc.documentId, {
+        fields: updates,
+        tables: buildTableUpdates(),
+        lineItems,
+        taxBreakdown: buildTaxBreakdownUpdates(),
+      });
       onSaved();
     } catch {
       setError('Failed to save field edits.');
@@ -193,6 +261,20 @@ export function FieldEditor({ document: doc, onSaved, onBack }: Props) {
             <span className={doc.warnings.length > 0 ? 'badge badge-warning' : 'badge badge-neutral'}>
               {doc.warnings.length} warning{doc.warnings.length === 1 ? '' : 's'}
             </span>
+            <label className="direction-select">
+              Chiều hoá đơn
+              <select
+                value={direction}
+                disabled={directionSaving}
+                onChange={(event) => handleDirectionChange(event.target.value as DocumentDirection)}
+              >
+                {(Object.keys(DIRECTION_LABELS) as DocumentDirection[]).map((option) => (
+                  <option key={option} value={option}>
+                    {DIRECTION_LABELS[option]}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
         </div>
       </div>
@@ -263,6 +345,14 @@ export function FieldEditor({ document: doc, onSaved, onBack }: Props) {
                 showDebug={showDebug}
                 registerFieldRef={registerFieldRef}
               />
+              {doc.documentCategory === 'VatInvoice' && (
+                <TaxBreakdownTable
+                  rows={taxBreakdownRows}
+                  onRowChange={handleTaxBreakdownRowChange}
+                  onAddRow={handleAddTaxBreakdownRow}
+                  onRemoveRow={handleRemoveTaxBreakdownRow}
+                />
+              )}
             </div>
 
             {doc.tables.length > 0 && (

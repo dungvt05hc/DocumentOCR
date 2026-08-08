@@ -11,6 +11,9 @@ public sealed class StructuredInvoiceResult
     /// <summary>Fields parsed with full confidence. <see cref="ExtractedField.DocumentId"/> is not set here.</summary>
     public IReadOnlyList<ExtractedField> Fields { get; init; } = [];
 
+    /// <summary>VAT-rate breakdown lines (TT78 "THTTLTSuat/LTSuat"). <see cref="InvoiceTaxBreakdown.DocumentId"/> is not set here.</summary>
+    public IReadOnlyList<InvoiceTaxBreakdown> TaxBreakdown { get; init; } = [];
+
     /// <summary>The original file content, kept for artifact/audit persistence.</summary>
     public string? RawXml { get; init; }
 

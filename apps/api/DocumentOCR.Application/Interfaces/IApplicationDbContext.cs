@@ -14,6 +14,7 @@ public interface IApplicationDbContext
     DbSet<ValidationWarning> ValidationWarnings { get; }
     DbSet<OcrProviderLog> OcrProviderLogs { get; }
     DbSet<CreditTransaction> CreditTransactions { get; }
+    DbSet<InvoiceTaxBreakdown> InvoiceTaxBreakdowns { get; }
 
     /// <summary>
     /// Exposed so a caller can recover from a failed <see cref="SaveChangesAsync"/> by discarding

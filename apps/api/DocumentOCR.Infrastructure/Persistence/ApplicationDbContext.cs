@@ -16,6 +16,7 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
     public DbSet<ValidationWarning> ValidationWarnings => Set<ValidationWarning>();
     public DbSet<OcrProviderLog> OcrProviderLogs => Set<OcrProviderLog>();
     public DbSet<CreditTransaction> CreditTransactions => Set<CreditTransaction>();
+    public DbSet<InvoiceTaxBreakdown> InvoiceTaxBreakdowns => Set<InvoiceTaxBreakdown>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

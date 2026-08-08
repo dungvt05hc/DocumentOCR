@@ -54,6 +54,16 @@ public class DocumentProfileCatalog : IDocumentProfileCatalog
 
     // ── Profile definitions ─────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Vietnamese-invoice layout: 4 clusters matching how a printed hóa đơn GTGT is actually laid
+    /// out — "seller"/"buyer" section keys and the "SellerName"/"SellerTaxCode" field keys (with
+    /// their legacy SupplierName/SupplierTaxCode aliases) are unchanged from before this reshape,
+    /// since existing warnings/exports/tests are keyed by them; every other field key here maps
+    /// 1:1 to its new <see cref="FieldName"/> enum value. "VatRate" is deliberately not a field
+    /// here — it now lives in the per-line <c>InvoiceTaxBreakdown</c> table (see
+    /// <c>DocumentReviewResponse.TaxBreakdown</c>), rendered as its own editable table rather than
+    /// a single flat field.
+    /// </summary>
     private static readonly DocumentProfile VatInvoiceProfile = new()
     {
         Category = DocumentCategory.VatInvoice,
@@ -62,91 +72,83 @@ public class DocumentProfileCatalog : IDocumentProfileCatalog
         [
             new ProfileSection
             {
-                SectionKey = "seller",
-                Title = "Seller information",
+                SectionKey = "invoice",
+                Title = "Thông tin hoá đơn",
                 DisplayOrder = 0,
+                Fields =
+                [
+                    new ProfileFieldDefinition { FieldKey = nameof(FieldName.InvoiceForm), Label = "Mẫu số", DisplayOrder = 0 },
+                    new ProfileFieldDefinition { FieldKey = nameof(FieldName.InvoiceSymbol), Label = "Ký hiệu", DisplayOrder = 1 },
+                    new ProfileFieldDefinition
+                    {
+                        FieldKey = nameof(FieldName.InvoiceNumber), Label = "Số hoá đơn",
+                        IsRequired = true, DisplayOrder = 2, MissingSeverity = ValidationSeverity.High
+                    },
+                    new ProfileFieldDefinition
+                    {
+                        FieldKey = nameof(FieldName.InvoiceDate), Label = "Ngày lập", DataType = ReviewFieldDataType.Date,
+                        IsRequired = true, DisplayOrder = 3, MissingSeverity = ValidationSeverity.High
+                    },
+                    new ProfileFieldDefinition { FieldKey = nameof(FieldName.TaxAuthorityCode), Label = "Mã CQT", DisplayOrder = 4 },
+                    new ProfileFieldDefinition { FieldKey = "LookupCode", Label = "Mã tra cứu", DisplayOrder = 5 },
+                    new ProfileFieldDefinition { FieldKey = nameof(FieldName.InvoiceNature), Label = "Tính chất", DisplayOrder = 6 }
+                ]
+            },
+            new ProfileSection
+            {
+                SectionKey = "seller",
+                Title = "Người bán",
+                DisplayOrder = 1,
                 Fields =
                 [
                     new ProfileFieldDefinition
                     {
-                        FieldKey = "SellerName", Label = "Seller name", DataType = ReviewFieldDataType.Text,
+                        FieldKey = "SellerName", Label = "Tên người bán", DataType = ReviewFieldDataType.Text,
                         IsRequired = true, DisplayOrder = 0, MissingSeverity = ValidationSeverity.High,
                         AliasFieldNames = [nameof(FieldName.SupplierName)]
                     },
                     new ProfileFieldDefinition
                     {
-                        FieldKey = "SellerTaxCode", Label = "Seller tax code", DataType = ReviewFieldDataType.TaxCode,
+                        FieldKey = "SellerTaxCode", Label = "Mã số thuế", DataType = ReviewFieldDataType.TaxCode,
                         IsRequired = true, DisplayOrder = 1, MissingSeverity = ValidationSeverity.High,
                         AliasFieldNames = [nameof(FieldName.SupplierTaxCode)]
                     },
-                    new ProfileFieldDefinition
-                    {
-                        FieldKey = "SellerAddress", Label = "Seller address", DataType = ReviewFieldDataType.Text,
-                        DisplayOrder = 2
-                    }
+                    new ProfileFieldDefinition { FieldKey = nameof(FieldName.SupplierAddress), Label = "Địa chỉ", DisplayOrder = 2 }
                 ]
             },
             new ProfileSection
             {
                 SectionKey = "buyer",
-                Title = "Buyer information",
-                DisplayOrder = 1,
-                Fields =
-                [
-                    new ProfileFieldDefinition { FieldKey = "BuyerName", Label = "Buyer name", DisplayOrder = 0 },
-                    new ProfileFieldDefinition { FieldKey = "BuyerTaxCode", Label = "Buyer tax code", DataType = ReviewFieldDataType.TaxCode, DisplayOrder = 1 },
-                    new ProfileFieldDefinition { FieldKey = "BuyerAddress", Label = "Buyer address", DisplayOrder = 2 }
-                ]
-            },
-            new ProfileSection
-            {
-                SectionKey = "invoice",
-                Title = "Invoice information",
+                Title = "Người mua",
                 DisplayOrder = 2,
                 Fields =
                 [
-                    new ProfileFieldDefinition { FieldKey = "InvoiceSymbol", Label = "Invoice symbol", DisplayOrder = 0 },
-                    new ProfileFieldDefinition
-                    {
-                        FieldKey = nameof(FieldName.InvoiceNumber), Label = "Invoice number",
-                        IsRequired = true, DisplayOrder = 1, MissingSeverity = ValidationSeverity.High
-                    },
-                    new ProfileFieldDefinition
-                    {
-                        FieldKey = nameof(FieldName.InvoiceDate), Label = "Invoice date", DataType = ReviewFieldDataType.Date,
-                        IsRequired = true, DisplayOrder = 2, MissingSeverity = ValidationSeverity.High
-                    },
-                    new ProfileFieldDefinition { FieldKey = "LookupCode", Label = "Lookup code", DisplayOrder = 3 }
+                    new ProfileFieldDefinition { FieldKey = nameof(FieldName.BuyerName), Label = "Tên người mua", DisplayOrder = 0 },
+                    new ProfileFieldDefinition { FieldKey = nameof(FieldName.BuyerTaxCode), Label = "Mã số thuế", DataType = ReviewFieldDataType.TaxCode, DisplayOrder = 1 },
+                    new ProfileFieldDefinition { FieldKey = nameof(FieldName.BuyerAddress), Label = "Địa chỉ", DisplayOrder = 2 }
                 ]
             },
             new ProfileSection
             {
                 SectionKey = "amounts",
-                Title = "Amounts",
+                Title = "Số tiền",
                 DisplayOrder = 3,
                 Fields =
                 [
-                    new ProfileFieldDefinition { FieldKey = nameof(FieldName.SubtotalAmount), Label = "Subtotal", DataType = ReviewFieldDataType.Money, DisplayOrder = 0 },
-                    new ProfileFieldDefinition { FieldKey = "VatRate", Label = "VAT rate", DataType = ReviewFieldDataType.Percentage, DisplayOrder = 1 },
-                    new ProfileFieldDefinition { FieldKey = nameof(FieldName.VatAmount), Label = "VAT amount", DataType = ReviewFieldDataType.Money, DisplayOrder = 2 },
+                    new ProfileFieldDefinition { FieldKey = nameof(FieldName.SubtotalAmount), Label = "Tiền hàng", DataType = ReviewFieldDataType.Money, DisplayOrder = 0 },
+                    new ProfileFieldDefinition { FieldKey = nameof(FieldName.VatAmount), Label = "Tổng thuế", DataType = ReviewFieldDataType.Money, DisplayOrder = 1 },
                     new ProfileFieldDefinition
                     {
-                        FieldKey = nameof(FieldName.TotalAmount), Label = "Total amount", DataType = ReviewFieldDataType.Money,
-                        IsRequired = true, DisplayOrder = 3, MissingSeverity = ValidationSeverity.High
+                        FieldKey = nameof(FieldName.TotalAmount), Label = "Tổng thanh toán", DataType = ReviewFieldDataType.Money,
+                        IsRequired = true, DisplayOrder = 2, MissingSeverity = ValidationSeverity.High
                     },
-                    new ProfileFieldDefinition { FieldKey = nameof(FieldName.Currency), Label = "Currency", DataType = ReviewFieldDataType.Currency, DisplayOrder = 4 }
-                ]
-            },
-            new ProfileSection
-            {
-                SectionKey = "notes",
-                Title = "Notes",
-                DisplayOrder = 4,
-                Fields =
-                [
-                    new ProfileFieldDefinition { FieldKey = "AmountInWords", Label = "Amount in words", DisplayOrder = 0 },
-                    new ProfileFieldDefinition { FieldKey = "PaymentMethod", Label = "Payment method", DisplayOrder = 1 },
-                    new ProfileFieldDefinition { FieldKey = nameof(FieldName.Notes), Label = "Notes", DataType = ReviewFieldDataType.MultilineText, DisplayOrder = 2 }
+                    new ProfileFieldDefinition { FieldKey = "AmountInWords", Label = "Tiền bằng chữ", DisplayOrder = 3 },
+                    new ProfileFieldDefinition { FieldKey = nameof(FieldName.Currency), Label = "Đồng tiền", DataType = ReviewFieldDataType.Currency, DisplayOrder = 4 },
+                    new ProfileFieldDefinition { FieldKey = "PaymentMethod", Label = "Hình thức thanh toán", DisplayOrder = 5 },
+                    // Not one of the 4 clusters' listed fields — kept here (its previous home)
+                    // rather than dropped, so free-text notes already on a document, or entered
+                    // by a user, are never silently discarded.
+                    new ProfileFieldDefinition { FieldKey = nameof(FieldName.Notes), Label = "Ghi chú", DataType = ReviewFieldDataType.MultilineText, DisplayOrder = 6 }
                 ]
             }
         ]

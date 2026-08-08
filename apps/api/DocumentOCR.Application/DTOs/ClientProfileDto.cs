@@ -35,3 +35,8 @@ public class AssignDocumentClientRequest
 {
     public Guid? ClientProfileId { get; set; }
 }
+
+public class SetDocumentDirectionRequest
+{
+    public DocumentDirection Direction { get; set; }
+}

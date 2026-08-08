@@ -363,6 +363,7 @@ public partial class FieldExtractionService : IFieldExtractionService
             AddDueDateLineCandidate(lines, candidates, i);
             AddPoNumberLineCandidate(lines, candidates, i);
             AddAmountLineCandidates(lines, candidates, i);
+            AddVatRateLineCandidate(lines, candidates, i);
             AddNotesLineCandidate(lines, candidates, i);
 
             if (i < 10
@@ -655,6 +656,36 @@ public partial class FieldExtractionService : IFieldExtractionService
             SourcePriority: 65,
             SourceMethod: "LineKeyword",
             SourceText: sourceLine.Text));
+    }
+
+    /// <summary>
+    /// Best-effort single VAT-rate candidate ("VatRate" — profile-only key, no <see cref="FieldName"/>
+    /// enum value, same pattern as "DueDate"/"PONumber") for a line that mentions VAT/GTGT and
+    /// carries a rate marker ("10%", "KCT", "KKKNT"). Deliberately narrow: real per-line-item VAT
+    /// rate extraction is a materially larger effort (see docs/decisions.md); this only lets
+    /// <c>DocumentProcessingService</c> synthesize a single tax-breakdown row when a document-level
+    /// rate is unambiguous in the text, mirroring what TT78 XML always gets from THTTLTSuat.
+    /// </summary>
+    private static void AddVatRateLineCandidate(
+        IReadOnlyList<LineContext> lines,
+        List<FieldCandidate> candidates,
+        int index)
+    {
+        var line = lines[index];
+        if (!ContainsAny(line.SearchText, VatKeywords)) return;
+
+        var match = VatRateMarkerPattern().Match(line.Text);
+        if (!match.Success) return;
+
+        candidates.Add(new FieldCandidate(
+            "VatRate",
+            match.Value,
+            Score(line, 0.8),
+            line.PageNumber,
+            line.BoundingBox,
+            SourcePriority: 60,
+            SourceMethod: "LineKeyword",
+            SourceText: line.Text));
     }
 
     private static void AddNotesLineCandidate(
@@ -1005,6 +1036,9 @@ public partial class FieldExtractionService : IFieldExtractionService
 
     [GeneratedRegex(@"^\d{1,3}(?:\.\d{3})+$")]
     private static partial Regex VietnameseGroupedMoneyPattern();
+
+    [GeneratedRegex(@"\d{1,2}(?:[.,]\d+)?\s*%|\bKCT\b|\bKKKNT\b", RegexOptions.IgnoreCase)]
+    private static partial Regex VatRateMarkerPattern();
 
     [GeneratedRegex(@"(?:VND|VNĐ|₫|đồng|dong|EUR|USD|GBP|JPY|CNY|€|£|\$)", RegexOptions.IgnoreCase)]
     private static partial Regex CurrencyMarkerPattern();

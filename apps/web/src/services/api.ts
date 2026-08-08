@@ -3,6 +3,7 @@ import type {
   ClientProfileDto,
   CreateClientProfileRequest,
   DocumentDetailDto,
+  DocumentDirection,
   DocumentDto,
   DocumentReviewResponse,
   ExportRequest,
@@ -43,6 +44,9 @@ export const getDocuments = (params?: GetDocumentsParams) =>
 
 export const assignDocumentClient = (documentId: string, clientProfileId: string | null) =>
   api.put(`/documents/${documentId}/client`, { clientProfileId });
+
+export const setDocumentDirection = (documentId: string, direction: DocumentDirection) =>
+  api.put(`/documents/${documentId}/direction`, { direction });
 
 export const getClientProfiles = () => api.get<ClientProfileDto[]>('/clients');
 

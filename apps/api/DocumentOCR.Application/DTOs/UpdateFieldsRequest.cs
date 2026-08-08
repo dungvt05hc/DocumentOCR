@@ -13,6 +13,25 @@ public class UpdateFieldsRequest
     /// the document's stored tables. See docs/status.md.
     /// </summary>
     public List<LineItemUpdateItem> LineItems { get; set; } = new();
+
+    /// <summary>
+    /// The full, replacement set of tax-breakdown rows for this document (not a delta) — a row
+    /// with no <see cref="TaxBreakdownUpdateItem.Id"/> is created, an existing row not present
+    /// here is deleted, matching how a review-UI table naturally submits its current row set.
+    /// Omit entirely (leave null) to leave the stored breakdown untouched.
+    /// </summary>
+    public List<TaxBreakdownUpdateItem>? TaxBreakdown { get; set; }
+}
+
+public class TaxBreakdownUpdateItem
+{
+    /// <summary>Null for a new row being added by the user.</summary>
+    public Guid? Id { get; set; }
+
+    public string? VatRate { get; set; }
+    public decimal? TaxableAmount { get; set; }
+    public decimal? TaxAmount { get; set; }
+    public int SortOrder { get; set; }
 }
 
 public class FieldUpdateItem

@@ -18,7 +18,23 @@ export type FieldName =
   | 'TotalAmount'
   | 'Currency'
   | 'DocumentType'
-  | 'Notes';
+  | 'Notes'
+  | 'BuyerName'
+  | 'BuyerTaxCode'
+  | 'BuyerAddress'
+  | 'SupplierAddress'
+  | 'InvoiceForm'
+  | 'InvoiceSymbol'
+  | 'TaxAuthorityCode'
+  | 'InvoiceNature';
+
+export type DocumentDirection = 'Unknown' | 'Purchase' | 'Sale';
+
+export const DIRECTION_LABELS: Record<DocumentDirection, string> = {
+  Unknown: 'Chưa xác định',
+  Purchase: 'Mua vào',
+  Sale: 'Bán ra',
+};
 
 export type WarningSeverity = 'Info' | 'Warning' | 'High' | 'Error';
 
@@ -60,6 +76,7 @@ export interface DocumentDto {
   pageCount: number;
   status: DocumentStatus;
   documentType: DocumentType;
+  direction: DocumentDirection;
   errorMessage: string | null;
   warningCount: number;
   processingStartedAt: string | null;
@@ -146,10 +163,20 @@ export interface LineItemUpdateItem {
   currency: string | null;
 }
 
+export interface TaxBreakdownUpdateItem {
+  id: string | null;
+  vatRate: string | null;
+  taxableAmount: number | null;
+  taxAmount: number | null;
+  sortOrder: number;
+}
+
 export interface UpdateFieldsRequest {
   fields: FieldUpdateItem[];
   tables?: TableUpdateItem[];
   lineItems?: LineItemUpdateItem[];
+  /** The full, replacement set of tax-breakdown rows — omit to leave the stored breakdown untouched. */
+  taxBreakdown?: TaxBreakdownUpdateItem[];
 }
 
 // ── Dynamic document review (document-category-driven profiles) ──────────────
@@ -214,6 +241,16 @@ export interface ReviewWarningDto {
   fieldKey: string | null;
   warningCode: string | null;
   message: string;
+}
+
+export interface ReviewTaxBreakdownRow {
+  id: string;
+  rawVatRate: string | null;
+  vatRate: string | null;
+  taxableAmount: number | null;
+  taxAmount: number | null;
+  confidence: number | null;
+  sortOrder: number;
 }
 
 // ── Detected OCR tables + candidate line items ────────────────────────────────
@@ -304,6 +341,7 @@ export interface DocumentReviewResponse {
   contentType: string;
   status: DocumentStatus;
   documentCategory: DocumentCategory;
+  direction: DocumentDirection;
   documentSubType: string | null;
   providerName: string | null;
   modelId: string | null;
@@ -313,6 +351,7 @@ export interface DocumentReviewResponse {
   warnings: ReviewWarningDto[];
   tables: ReviewTable[];
   lineItems: ReviewLineItem[];
+  taxBreakdown: ReviewTaxBreakdownRow[];
   debugData: OcrDebugData | null;
   debugSummary: string | null;
 }

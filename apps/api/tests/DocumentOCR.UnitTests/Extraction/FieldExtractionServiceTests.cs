@@ -266,6 +266,27 @@ public class FieldExtractionServiceTests
         Assert.DoesNotContain(fields, f => f.FieldName == nameof(FieldName.InvoiceNumber));
     }
 
+    [Fact]
+    public void Extract_LineWithVatKeywordAndRateMarker_ProducesVatRateCandidate()
+    {
+        var ocr = OcrFromLines("Thuế GTGT (10%): 100.000");
+
+        var fields = _sut.Extract(DocumentId, ocr);
+
+        var vatRate = Assert.Single(fields, f => f.FieldName == "VatRate");
+        Assert.Contains("10%", vatRate.RawValue);
+    }
+
+    [Fact]
+    public void Extract_NoVatKeywordLine_DoesNotProduceVatRateCandidate()
+    {
+        var ocr = OcrFromLines("Tổng thanh toán: 1.100.000");
+
+        var fields = _sut.Extract(DocumentId, ocr);
+
+        Assert.DoesNotContain(fields, f => f.FieldName == "VatRate");
+    }
+
     private static NormalizedOcrDocument OcrFromLines(params string[] lines)
     {
         var ocrLines = lines

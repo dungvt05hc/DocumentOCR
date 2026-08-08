@@ -211,6 +211,17 @@ public class DocumentsController : ControllerBase
         return NoContent();
     }
 
+    // PUT /api/documents/{id}/direction — manual override of the auto-inferred purchase/sale direction
+    [HttpPut("{id:guid}/direction")]
+    public async Task<IActionResult> SetDirection(
+        Guid id,
+        [FromBody] SetDocumentDirectionRequest request,
+        CancellationToken ct)
+    {
+        await _documentService.SetDirectionAsync(id, DefaultOrganizationId, request.Direction, ct);
+        return NoContent();
+    }
+
     // GET /api/documents/{id}
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> GetById(Guid id, CancellationToken ct)

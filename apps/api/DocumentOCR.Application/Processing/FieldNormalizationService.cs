@@ -108,10 +108,44 @@ public partial class FieldNormalizationService : IFieldNormalizationService
             : null;
     }
 
+    private static readonly HashSet<string> CanonicalVatRates = ["0%", "5%", "8%", "10%"];
+
+    public string? NormalizeVatRate(string? rawValue)
+    {
+        if (string.IsNullOrWhiteSpace(rawValue)) return null;
+
+        var upper = RemoveDiacritics(rawValue).ToUpperInvariant();
+
+        if (upper.Contains("KHONG CHIU THUE", StringComparison.Ordinal) || upper.Contains("KCT", StringComparison.Ordinal))
+            return "KCT";
+
+        if (upper.Contains("KHONG KE KHAI", StringComparison.Ordinal) || upper.Contains("KKKNT", StringComparison.Ordinal))
+            return "KKKNT";
+
+        var match = VatRateNumberPattern().Match(rawValue);
+        if (!match.Success) return null;
+
+        // A rate is always 0-100, so a "," here is a Vietnamese decimal separator (e.g. "10,0%"),
+        // never a thousands grouping — safe to normalize to "." before parsing.
+        var numberText = match.Groups[1].Value.Replace(',', '.');
+        if (!decimal.TryParse(numberText, NumberStyles.Number, CultureInfo.InvariantCulture, out var value))
+            return null;
+
+        var candidate = $"{value.ToString("0.##", CultureInfo.InvariantCulture)}%";
+        return CanonicalVatRates.Contains(candidate) ? candidate : null;
+    }
+
     public void NormalizeFields(IEnumerable<ExtractedField> fields)
     {
         foreach (var field in fields)
         {
+            // A field whose extraction source already computed a NormalizedValue (e.g. TT78 XML's
+            // machine-formatted decimals, parsed with invariant-culture decimal.Parse rather than
+            // this class's Vietnamese-text-oriented regexes) is authoritative — this method must
+            // not clobber it. OCR-sourced fields never arrive with NormalizedValue pre-set, so this
+            // is a no-op for the existing OCR pipeline.
+            if (field.NormalizedValue is not null) continue;
+
             field.NormalizedValue = field.FieldName switch
             {
                 nameof(FieldName.TotalAmount) or nameof(FieldName.SubtotalAmount) or nameof(FieldName.VatAmount)
@@ -167,4 +201,7 @@ public partial class FieldNormalizationService : IFieldNormalizationService
 
     [GeneratedRegex(@"\D")]
     private static partial Regex NonDigitPattern();
+
+    [GeneratedRegex(@"(\d+(?:[.,]\d+)?)\s*%")]
+    private static partial Regex VatRateNumberPattern();
 }

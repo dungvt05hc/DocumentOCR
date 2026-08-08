@@ -164,6 +164,24 @@ public class FieldValidationTests
     }
 
     [Fact]
+    public void Validate_TotalAmountGenuinelyZero_ProducesInvalidAmountNotMissingWarning()
+    {
+        // A field that was actually read and genuinely equals "0" must be distinguished from a
+        // field that couldn't be read at all: it gets INVALID_TOTAL_AMOUNT (the value is present
+        // but not positive), never REQUIRED_FIELD_MISSING (which implies no value was read).
+        var fields = ValidFields();
+        fields.RemoveAll(f => f.FieldName == nameof(FieldName.TotalAmount));
+        fields.Add(Field(nameof(FieldName.TotalAmount), "0"));
+
+        var warnings = _sut.Validate(DocId, fields);
+
+        Assert.Contains(warnings, w =>
+            w.FieldName == nameof(FieldName.TotalAmount) && w.WarningCode == "INVALID_TOTAL_AMOUNT");
+        Assert.DoesNotContain(warnings, w =>
+            w.FieldName == nameof(FieldName.TotalAmount) && w.WarningCode == "REQUIRED_FIELD_MISSING");
+    }
+
+    [Fact]
     public void Validate_SubPlusVatMatchesTotal_NoConsistencyWarning()
     {
         var fields = new List<ExtractedField>

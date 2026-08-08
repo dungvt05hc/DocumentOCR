@@ -16,6 +16,7 @@ public class Document : BaseEntity
 
     public DocumentStatus Status { get; set; } = DocumentStatus.Uploaded;
     public DocumentType DocumentType { get; set; } = DocumentType.Unknown;
+    public DocumentDirection Direction { get; set; } = DocumentDirection.Unknown;
 
     public DateTime? ProcessingStartedAt { get; set; }
     public DateTime? ProcessingCompletedAt { get; set; }
@@ -30,4 +31,5 @@ public class Document : BaseEntity
     public ICollection<ExtractedField> Fields { get; set; } = new List<ExtractedField>();
     public ICollection<ValidationWarning> ValidationWarnings { get; set; } = new List<ValidationWarning>();
     public ICollection<OcrProviderLog> OcrProviderLogs { get; set; } = new List<OcrProviderLog>();
+    public ICollection<InvoiceTaxBreakdown> TaxBreakdowns { get; set; } = new List<InvoiceTaxBreakdown>();
 }

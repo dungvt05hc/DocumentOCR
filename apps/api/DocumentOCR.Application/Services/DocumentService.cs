@@ -13,6 +13,8 @@ public class DocumentService
     private readonly IApplicationDbContext _db;
     private readonly IDocumentStorageService _storage;
     private readonly IFieldValidationService _validation;
+    private readonly IFieldNormalizationService _normalization;
+    private readonly IClientAutoSuggestService _clientAutoSuggest;
     private readonly DocumentReviewMappingService _reviewMapping;
     private readonly IReviewTableBuilder _tableBuilder;
 
@@ -20,12 +22,16 @@ public class DocumentService
         IApplicationDbContext db,
         IDocumentStorageService storage,
         IFieldValidationService validation,
+        IFieldNormalizationService normalization,
+        IClientAutoSuggestService clientAutoSuggest,
         DocumentReviewMappingService reviewMapping,
         IReviewTableBuilder tableBuilder)
     {
         _db = db;
         _storage = storage;
         _validation = validation;
+        _normalization = normalization;
+        _clientAutoSuggest = clientAutoSuggest;
         _reviewMapping = reviewMapping;
         _tableBuilder = tableBuilder;
     }
@@ -130,6 +136,22 @@ public class DocumentService
         doc.ClientProfileId = clientProfileId;
         doc.UpdatedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
+
+        // Re-derive Direction against whichever client is now attached (or none) — keeps it
+        // consistent with a manual re-assignment rather than leaving a stale value from before.
+        await _clientAutoSuggest.InferDirectionAsync(documentId, ct);
+    }
+
+    /// <summary>Manual override for <see cref="Document.Direction"/> — the auto-inferred value (see <see cref="IClientAutoSuggestService.InferDirectionAsync"/>) is only a suggestion the user can always correct.</summary>
+    public async Task SetDirectionAsync(Guid documentId, Guid organizationId, DocumentDirection direction, CancellationToken ct = default)
+    {
+        var doc = await _db.Documents
+            .FirstOrDefaultAsync(d => d.Id == documentId && d.OrganizationId == organizationId, ct)
+            ?? throw new KeyNotFoundException($"Document {documentId} not found.");
+
+        doc.Direction = direction;
+        doc.UpdatedAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync(ct);
     }
 
     public async Task<DocumentDetailDto?> GetByIdAsync(Guid id, Guid organizationId, CancellationToken ct = default)
@@ -154,6 +176,7 @@ public class DocumentService
             .Include(d => d.ValidationWarnings)
             .Include(d => d.OcrProviderLogs)
             .Include(d => d.Pages)
+            .Include(d => d.TaxBreakdowns)
             .FirstOrDefaultAsync(d => d.Id == id && d.OrganizationId == organizationId, ct);
 
         if (doc is null) return null;
@@ -299,6 +322,42 @@ public class DocumentService
             && int.TryParse(tableId.AsSpan(prefix.Length), out index);
     }
 
+    /// <summary>
+    /// Replaces <paramref name="doc"/>'s tax-breakdown rows with <paramref name="updates"/> as a
+    /// whole set (not a delta): rows with a matching <see cref="TaxBreakdownUpdateItem.Id"/> are
+    /// updated in place, rows with no <c>Id</c> are new, and any existing row absent from
+    /// <paramref name="updates"/> is deleted — the natural shape for a review-UI table that always
+    /// submits its current full row set (add/edit/remove rows freely).
+    /// </summary>
+    private void ApplyTaxBreakdownEdits(Document doc, List<TaxBreakdownUpdateItem> updates)
+    {
+        var keptIds = updates.Where(u => u.Id is not null).Select(u => u.Id!.Value).ToHashSet();
+
+        foreach (var stale in doc.TaxBreakdowns.Where(t => !keptIds.Contains(t.Id)).ToList())
+        {
+            doc.TaxBreakdowns.Remove(stale);
+            _db.InvoiceTaxBreakdowns.Remove(stale);
+        }
+
+        foreach (var update in updates)
+        {
+            var row = update.Id is not null ? doc.TaxBreakdowns.FirstOrDefault(t => t.Id == update.Id) : null;
+            if (row is null)
+            {
+                row = new InvoiceTaxBreakdown { DocumentId = doc.Id };
+                doc.TaxBreakdowns.Add(row);
+                _db.InvoiceTaxBreakdowns.Add(row);
+            }
+
+            row.RawVatRate = update.VatRate;
+            row.VatRate = _normalization.NormalizeVatRate(update.VatRate);
+            row.TaxableAmount = update.TaxableAmount;
+            row.TaxAmount = update.TaxAmount;
+            row.SortOrder = update.SortOrder;
+            row.UpdatedAt = DateTime.UtcNow;
+        }
+    }
+
     private static ExtractedFieldDto MapToFieldDto(ExtractedField f) => new()
     {
         Id = f.Id,
@@ -362,6 +421,7 @@ public class DocumentService
         var doc = await _db.Documents
             .Include(d => d.Fields)
             .Include(d => d.ValidationWarnings)
+            .Include(d => d.TaxBreakdowns)
             .FirstOrDefaultAsync(d => d.Id == documentId && d.OrganizationId == organizationId, ct)
             ?? throw new KeyNotFoundException($"Document {documentId} not found.");
 
@@ -397,6 +457,9 @@ public class DocumentService
             ApplyTableEdits(tables, request.Tables, _tableBuilder);
             doc.TablesJson = tables.Count > 0 ? JsonSerializer.Serialize(tables) : null;
         }
+
+        if (request.TaxBreakdown is not null)
+            ApplyTaxBreakdownEdits(doc, request.TaxBreakdown);
 
         // Warnings were computed against the original OCR output; the user's corrections
         // may have resolved some and none of the old ones still reflect the current data,
@@ -437,6 +500,7 @@ public class DocumentService
         PageCount = d.PageCount,
         Status = d.Status,
         DocumentType = d.DocumentType,
+        Direction = d.Direction,
         ErrorMessage = d.ErrorMessage,
         WarningCount = d.ValidationWarnings.Count,
         ProcessingStartedAt = d.ProcessingStartedAt,
@@ -456,6 +520,7 @@ public class DocumentService
         PageCount = d.PageCount,
         Status = d.Status,
         DocumentType = d.DocumentType,
+        Direction = d.Direction,
         ErrorMessage = d.ErrorMessage,
         WarningCount = d.ValidationWarnings.Count,
         ProcessingStartedAt = d.ProcessingStartedAt,

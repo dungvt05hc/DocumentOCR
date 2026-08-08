@@ -330,6 +330,48 @@ public class DocumentProcessingServiceTests
         Assert.True(log.Success);
     }
 
+    [Fact]
+    public async Task ProcessAsync_OcrTextWithRecognizedVatRateLine_SynthesizesOneTaxBreakdownRow()
+    {
+        await using var db = CreateDbContext();
+        var document = await SeedDocumentAsync(db, DocumentStatus.Uploaded);
+        var provider = new StubOcrProvider(new NormalizedOcrDocument
+        {
+            Success = true,
+            ProviderName = "Stub",
+            PageCount = 1,
+            FullText = "Cộng tiền hàng: 1.000.000\nThuế GTGT (10%): 100.000\nTổng thanh toán: 1.100.000",
+            Pages =
+            [
+                new OcrPage
+                {
+                    PageNumber = 1,
+                    FullText = "Cộng tiền hàng: 1.000.000\nThuế GTGT (10%): 100.000\nTổng thanh toán: 1.100.000",
+                    Lines =
+                    [
+                        new OcrLine { LineNumber = 1, PageNumber = 1, Text = "Cộng tiền hàng: 1.000.000", Confidence = 0.9 },
+                        new OcrLine { LineNumber = 2, PageNumber = 1, Text = "Thuế GTGT (10%): 100.000", Confidence = 0.9 },
+                        new OcrLine { LineNumber = 3, PageNumber = 1, Text = "Tổng thanh toán: 1.100.000", Confidence = 0.9 }
+                    ]
+                }
+            ]
+        });
+        var sut = CreateSut(db, provider, new FakeDocumentStorageService());
+
+        await sut.ProcessAsync(document.Id);
+
+        var reloaded = await db.Documents
+            .Include(d => d.Fields)
+            .Include(d => d.TaxBreakdowns)
+            .SingleAsync(d => d.Id == document.Id);
+
+        Assert.DoesNotContain(reloaded.Fields, f => f.FieldName == "VatRate");
+        var row = Assert.Single(reloaded.TaxBreakdowns);
+        Assert.Equal("10%", row.VatRate);
+        Assert.Equal(1000000m, row.TaxableAmount);
+        Assert.Equal(100000m, row.TaxAmount);
+    }
+
     private sealed class RecordingOcrProvider : IDocumentOcrProvider
     {
         public int CallCount { get; private set; }
@@ -343,14 +385,61 @@ public class DocumentProcessingServiceTests
         }
     }
 
-    private sealed class XmlFixtureDocumentStorageService : IDocumentStorageService
+    [Fact]
+    public async Task ProcessAsync_XmlDocumentWithTaxBreakdown_PersistsTaxBreakdownRows()
+    {
+        await using var db = CreateDbContext();
+        var document = await SeedDocumentAsync(db, DocumentStatus.Uploaded, doc =>
+        {
+            doc.OriginalFileName = "invoice.xml";
+            doc.ContentType = "text/xml";
+        });
+        var sut = CreateSut(
+            db,
+            new RecordingOcrProvider(),
+            new XmlFixtureDocumentStorageService("1C26TNH_00000947_4500609710.xml"),
+            structuredInvoiceParser: new TT78XmlInvoiceParser());
+
+        await sut.ProcessAsync(document.Id);
+
+        var reloaded = await db.Documents.Include(d => d.TaxBreakdowns).SingleAsync(d => d.Id == document.Id);
+        var row = Assert.Single(reloaded.TaxBreakdowns);
+        Assert.Equal("10%", row.VatRate);
+        Assert.Equal(10019909.000000m, row.TaxableAmount);
+        Assert.Equal(1001991.000000m, row.TaxAmount);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_ReprocessingXmlDocument_ReplacesStaleTaxBreakdownRows()
+    {
+        await using var db = CreateDbContext();
+        var document = await SeedDocumentAsync(db, DocumentStatus.Processed, doc =>
+        {
+            doc.OriginalFileName = "invoice.xml";
+            doc.ContentType = "text/xml";
+            doc.TaxBreakdowns.Add(new InvoiceTaxBreakdown { DocumentId = doc.Id, VatRate = "5%", TaxableAmount = 1, TaxAmount = 1, SortOrder = 0 });
+        });
+        var sut = CreateSut(
+            db,
+            new RecordingOcrProvider(),
+            new XmlFixtureDocumentStorageService("1C26TNH_00000947_4500609710.xml"),
+            structuredInvoiceParser: new TT78XmlInvoiceParser());
+
+        await sut.ProcessAsync(document.Id);
+
+        var reloaded = await db.Documents.Include(d => d.TaxBreakdowns).SingleAsync(d => d.Id == document.Id);
+        var row = Assert.Single(reloaded.TaxBreakdowns);
+        Assert.Equal("10%", row.VatRate);
+    }
+
+    private sealed class XmlFixtureDocumentStorageService(string fixtureFileName = "valid-invoice.xml") : IDocumentStorageService
     {
         public Task<string> SaveAsync(Stream fileStream, string originalFileName, string contentType, CancellationToken ct = default) =>
             Task.FromResult($"fake/{originalFileName}");
 
         public Task<Stream> GetStreamAsync(string storedPath, CancellationToken ct = default) =>
             Task.FromResult<Stream>(File.OpenRead(
-                Path.Combine(AppContext.BaseDirectory, "Fixtures", "tt78", "valid-invoice.xml")));
+                Path.Combine(AppContext.BaseDirectory, "Fixtures", "tt78", fixtureFileName)));
 
         public Task DeleteAsync(string storedPath, CancellationToken ct = default) =>
             throw new NotSupportedException("Not used by ProcessAsync.");

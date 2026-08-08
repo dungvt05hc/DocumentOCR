@@ -141,6 +141,139 @@ public class ClientAutoSuggestServiceTests
         Assert.False(assigned);
     }
 
+    [Fact]
+    public async Task TrySuggestAndAssignAsync_BuyerTaxCodeMatchesActiveClient_AssignsClient()
+    {
+        // Closes the "buyer-side matching" gap noted in docs/decisions.md — a purchase document
+        // (hóa đơn đầu vào) where the client is the buyer, not the seller.
+        await using var db = CreateDbContext();
+        var client = await SeedClientAsync(db, taxCode: "0100109106");
+        var document = await SeedDocumentAsync(db, doc =>
+            doc.Fields.Add(Field(doc.Id, "BuyerTaxCode", "0100109106")));
+        var sut = CreateSut(db);
+
+        var assigned = await sut.TrySuggestAndAssignAsync(document.Id);
+
+        Assert.True(assigned);
+        var reloaded = await db.Documents.SingleAsync(d => d.Id == document.Id);
+        Assert.Equal(client.Id, reloaded.ClientProfileId);
+    }
+
+    [Fact]
+    public async Task TrySuggestAndAssignAsync_SupplierMatches_PreferredOverBuyerMatch()
+    {
+        await using var db = CreateDbContext();
+        var sellerClient = await SeedClientAsync(db, taxCode: "0100109106");
+        await SeedClientAsync(db, taxCode: "0109876543");
+        var document = await SeedDocumentAsync(db, doc =>
+        {
+            doc.Fields.Add(Field(doc.Id, "SupplierTaxCode", "0100109106"));
+            doc.Fields.Add(Field(doc.Id, "BuyerTaxCode", "0109876543"));
+        });
+        var sut = CreateSut(db);
+
+        var assigned = await sut.TrySuggestAndAssignAsync(document.Id);
+
+        Assert.True(assigned);
+        var reloaded = await db.Documents.SingleAsync(d => d.Id == document.Id);
+        Assert.Equal(sellerClient.Id, reloaded.ClientProfileId);
+    }
+
+    // ── InferDirectionAsync ────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task InferDirectionAsync_BuyerTaxCodeMatchesClient_ResolvesPurchase()
+    {
+        await using var db = CreateDbContext();
+        var client = await SeedClientAsync(db, taxCode: "0100109106");
+        var document = await SeedDocumentAsync(db, doc =>
+        {
+            doc.ClientProfileId = client.Id;
+            doc.Fields.Add(Field(doc.Id, "BuyerTaxCode", "0100109106"));
+            doc.Fields.Add(Field(doc.Id, "SupplierTaxCode", "9999999999"));
+        });
+        var sut = CreateSut(db);
+
+        var direction = await sut.InferDirectionAsync(document.Id);
+
+        Assert.Equal(DocumentDirection.Purchase, direction);
+        var reloaded = await db.Documents.SingleAsync(d => d.Id == document.Id);
+        Assert.Equal(DocumentDirection.Purchase, reloaded.Direction);
+    }
+
+    [Fact]
+    public async Task InferDirectionAsync_SupplierTaxCodeMatchesClient_ResolvesSale()
+    {
+        await using var db = CreateDbContext();
+        var client = await SeedClientAsync(db, taxCode: "0100109106");
+        var document = await SeedDocumentAsync(db, doc =>
+        {
+            doc.ClientProfileId = client.Id;
+            doc.Fields.Add(Field(doc.Id, "SupplierTaxCode", "0100109106"));
+        });
+        var sut = CreateSut(db);
+
+        var direction = await sut.InferDirectionAsync(document.Id);
+
+        Assert.Equal(DocumentDirection.Sale, direction);
+    }
+
+    [Fact]
+    public async Task InferDirectionAsync_NoClientAssigned_ResolvesUnknownAndAddsWarning()
+    {
+        await using var db = CreateDbContext();
+        var document = await SeedDocumentAsync(db, _ => { });
+        var sut = CreateSut(db);
+
+        var direction = await sut.InferDirectionAsync(document.Id);
+
+        Assert.Equal(DocumentDirection.Unknown, direction);
+        var warnings = await db.ValidationWarnings.Where(w => w.DocumentId == document.Id).ToListAsync();
+        Assert.Contains(warnings, w => w.WarningCode == "DOCUMENT_DIRECTION_UNKNOWN");
+    }
+
+    [Fact]
+    public async Task InferDirectionAsync_NeitherTaxCodeMatchesClient_ResolvesUnknownAndAddsWarning()
+    {
+        await using var db = CreateDbContext();
+        var client = await SeedClientAsync(db, taxCode: "0100109106");
+        var document = await SeedDocumentAsync(db, doc =>
+        {
+            doc.ClientProfileId = client.Id;
+            doc.Fields.Add(Field(doc.Id, "SupplierTaxCode", "1111111111"));
+            doc.Fields.Add(Field(doc.Id, "BuyerTaxCode", "2222222222"));
+        });
+        var sut = CreateSut(db);
+
+        var direction = await sut.InferDirectionAsync(document.Id);
+
+        Assert.Equal(DocumentDirection.Unknown, direction);
+        var warnings = await db.ValidationWarnings.Where(w => w.DocumentId == document.Id).ToListAsync();
+        Assert.Contains(warnings, w => w.WarningCode == "DOCUMENT_DIRECTION_UNKNOWN");
+    }
+
+    [Fact]
+    public async Task InferDirectionAsync_CalledAgainAfterResolving_RemovesStaleUnknownWarning()
+    {
+        await using var db = CreateDbContext();
+        var client = await SeedClientAsync(db, taxCode: "0100109106");
+        var document = await SeedDocumentAsync(db, _ => { });
+        var sut = CreateSut(db);
+
+        await sut.InferDirectionAsync(document.Id);
+
+        var reloaded = await db.Documents.Include(d => d.Fields).SingleAsync(d => d.Id == document.Id);
+        reloaded.ClientProfileId = client.Id;
+        db.ExtractedFields.Add(Field(document.Id, "SupplierTaxCode", "0100109106"));
+        await db.SaveChangesAsync();
+
+        var direction = await sut.InferDirectionAsync(document.Id);
+
+        Assert.Equal(DocumentDirection.Sale, direction);
+        var warnings = await db.ValidationWarnings.Where(w => w.DocumentId == document.Id).ToListAsync();
+        Assert.DoesNotContain(warnings, w => w.WarningCode == "DOCUMENT_DIRECTION_UNKNOWN");
+    }
+
     private static ClientAutoSuggestService CreateSut(ApplicationDbContext db) =>
         new(db, new FieldNormalizationService());
 

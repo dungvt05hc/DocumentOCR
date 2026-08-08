@@ -127,6 +127,134 @@ public class DocumentServiceTests
     }
 
     [Fact]
+    public async Task UpdateFieldsAsync_NewTaxBreakdownRowWithNoId_IsCreated()
+    {
+        await using var db = CreateDbContext();
+        var document = await SeedDocumentAsync(db, _ => { });
+        var sut = CreateSut(db);
+        var request = new UpdateFieldsRequest
+        {
+            TaxBreakdown = [new TaxBreakdownUpdateItem { VatRate = "10%", TaxableAmount = 1000000, TaxAmount = 100000, SortOrder = 0 }]
+        };
+
+        await sut.UpdateFieldsAsync(document.Id, OrganizationId, request);
+
+        var reloaded = await db.Documents.Include(d => d.TaxBreakdowns).SingleAsync(d => d.Id == document.Id);
+        var row = Assert.Single(reloaded.TaxBreakdowns);
+        Assert.Equal("10%", row.VatRate);
+        Assert.Equal(1000000, row.TaxableAmount);
+        Assert.Equal(100000, row.TaxAmount);
+    }
+
+    [Fact]
+    public async Task UpdateFieldsAsync_ExistingTaxBreakdownRowEdited_IsUpdatedInPlace()
+    {
+        await using var db = CreateDbContext();
+        var document = await SeedDocumentAsync(db, doc =>
+            doc.TaxBreakdowns.Add(new InvoiceTaxBreakdown { DocumentId = doc.Id, VatRate = "10%", TaxableAmount = 1000000, TaxAmount = 100000, SortOrder = 0 }));
+        var existingId = document.TaxBreakdowns.Single().Id;
+        var sut = CreateSut(db);
+        var request = new UpdateFieldsRequest
+        {
+            TaxBreakdown = [new TaxBreakdownUpdateItem { Id = existingId, VatRate = "8%", TaxableAmount = 2000000, TaxAmount = 160000, SortOrder = 0 }]
+        };
+
+        await sut.UpdateFieldsAsync(document.Id, OrganizationId, request);
+
+        var reloaded = await db.Documents.Include(d => d.TaxBreakdowns).SingleAsync(d => d.Id == document.Id);
+        var row = Assert.Single(reloaded.TaxBreakdowns);
+        Assert.Equal(existingId, row.Id);
+        Assert.Equal("8%", row.VatRate);
+        Assert.Equal(2000000, row.TaxableAmount);
+    }
+
+    [Fact]
+    public async Task UpdateFieldsAsync_ExistingTaxBreakdownRowOmittedFromRequest_IsDeleted()
+    {
+        await using var db = CreateDbContext();
+        var document = await SeedDocumentAsync(db, doc =>
+            doc.TaxBreakdowns.Add(new InvoiceTaxBreakdown { DocumentId = doc.Id, VatRate = "10%", TaxableAmount = 1000000, TaxAmount = 100000, SortOrder = 0 }));
+        var sut = CreateSut(db);
+        var request = new UpdateFieldsRequest { TaxBreakdown = [] };
+
+        await sut.UpdateFieldsAsync(document.Id, OrganizationId, request);
+
+        var reloaded = await db.Documents.Include(d => d.TaxBreakdowns).SingleAsync(d => d.Id == document.Id);
+        Assert.Empty(reloaded.TaxBreakdowns);
+    }
+
+    [Fact]
+    public async Task UpdateFieldsAsync_TaxBreakdownNotProvided_LeavesExistingRowsUntouched()
+    {
+        await using var db = CreateDbContext();
+        var document = await SeedDocumentAsync(db, doc =>
+            doc.TaxBreakdowns.Add(new InvoiceTaxBreakdown { DocumentId = doc.Id, VatRate = "10%", TaxableAmount = 1000000, TaxAmount = 100000, SortOrder = 0 }));
+        var sut = CreateSut(db);
+
+        await sut.UpdateFieldsAsync(document.Id, OrganizationId, RequestFor(FieldName.Notes, "ok"));
+
+        var reloaded = await db.Documents.Include(d => d.TaxBreakdowns).SingleAsync(d => d.Id == document.Id);
+        Assert.Single(reloaded.TaxBreakdowns);
+    }
+
+    [Fact]
+    public async Task SetDirectionAsync_UpdatesDocumentDirection()
+    {
+        await using var db = CreateDbContext();
+        var document = await SeedDocumentAsync(db, _ => { });
+        var sut = CreateSut(db);
+
+        await sut.SetDirectionAsync(document.Id, OrganizationId, DocumentDirection.Purchase);
+
+        var reloaded = await db.Documents.SingleAsync(d => d.Id == document.Id);
+        Assert.Equal(DocumentDirection.Purchase, reloaded.Direction);
+    }
+
+    [Fact]
+    public async Task SetDirectionAsync_UnknownDocument_ThrowsKeyNotFoundException()
+    {
+        await using var db = CreateDbContext();
+        var sut = CreateSut(db);
+
+        await Assert.ThrowsAsync<KeyNotFoundException>(() =>
+            sut.SetDirectionAsync(Guid.NewGuid(), OrganizationId, DocumentDirection.Sale));
+    }
+
+    [Fact]
+    public async Task AssignClientAsync_AssigningMatchingSellerClient_InfersSaleDirection()
+    {
+        await using var db = CreateDbContext();
+        var client = new ClientProfile { OrganizationId = OrganizationId, Name = "Test Client", TaxCode = "0100109106" };
+        db.ClientProfiles.Add(client);
+        var document = await SeedDocumentAsync(db, doc =>
+            doc.Fields.Add(Field(doc.Id, FieldName.SupplierTaxCode, "0100109106")));
+        await db.SaveChangesAsync();
+        var sut = CreateSut(db);
+
+        await sut.AssignClientAsync(document.Id, OrganizationId, client.Id);
+
+        var reloaded = await db.Documents.SingleAsync(d => d.Id == document.Id);
+        Assert.Equal(DocumentDirection.Sale, reloaded.Direction);
+    }
+
+    [Fact]
+    public async Task GetReviewByIdAsync_DocumentWithTaxBreakdown_IncludesOrderedRows()
+    {
+        await using var db = CreateDbContext();
+        var document = await SeedDocumentAsync(db, doc =>
+        {
+            doc.TaxBreakdowns.Add(new InvoiceTaxBreakdown { DocumentId = doc.Id, VatRate = "0%", TaxableAmount = 5, TaxAmount = 0, SortOrder = 1 });
+            doc.TaxBreakdowns.Add(new InvoiceTaxBreakdown { DocumentId = doc.Id, VatRate = "10%", TaxableAmount = 10, TaxAmount = 1, SortOrder = 0 });
+        });
+        var sut = CreateSut(db);
+
+        var result = await sut.GetReviewByIdAsync(document.Id, OrganizationId);
+
+        Assert.NotNull(result);
+        Assert.Equal(["10%", "0%"], result!.TaxBreakdown.Select(t => t.VatRate));
+    }
+
+    [Fact]
     public async Task UploadAsync_ValidFile_SavesToStorageAndCreatesUploadedDocument()
     {
         await using var db = CreateDbContext();
@@ -345,6 +473,8 @@ public class DocumentServiceTests
             db,
             storage,
             new FieldValidationService(new DocumentProfileCatalog()),
+            new FieldNormalizationService(),
+            new ClientAutoSuggestService(db, new FieldNormalizationService()),
             new DocumentReviewMappingService(new DocumentProfileCatalog(), new ReviewTableBuilder()),
             new ReviewTableBuilder());
 

@@ -49,8 +49,8 @@ export function ReviewDetailsTab({
         .slice()
         .sort((a, b) => a.displayOrder - b.displayOrder)
         .map((section) => (
-          <div key={section.sectionKey} className="review-section">
-            <h3>{section.title}</h3>
+          <details key={section.sectionKey} className="review-section" open>
+            <summary>{section.title}</summary>
             {section.description && <p className="muted">{section.description}</p>}
 
             <div className="field-grid">
@@ -62,6 +62,7 @@ export function ReviewDetailsTab({
                   const value = values[field.fieldKey] ?? '';
                   const inputType = fieldInputType(field, value);
                   const missingRequired = field.isMissing && field.isRequired;
+                  const placeholder = field.isMissing ? 'chưa đọc được' : undefined;
 
                   return (
                     <label
@@ -92,6 +93,7 @@ export function ReviewDetailsTab({
                         <textarea
                           ref={(el) => registerFieldRef(field.fieldKey, el)}
                           value={value}
+                          placeholder={placeholder}
                           onChange={(event) => onFieldChange(field.fieldKey, event.target.value)}
                         />
                       ) : inputType === 'select' ? (
@@ -100,7 +102,7 @@ export function ReviewDetailsTab({
                           value={value}
                           onChange={(event) => onFieldChange(field.fieldKey, event.target.value)}
                         >
-                          <option value="">—</option>
+                          <option value="">{placeholder ?? '—'}</option>
                           {field.options?.map((option) => (
                             <option key={option} value={option}>
                               {option}
@@ -112,6 +114,7 @@ export function ReviewDetailsTab({
                           ref={(el) => registerFieldRef(field.fieldKey, el)}
                           type={inputType === 'date' ? 'date' : 'text'}
                           value={value}
+                          placeholder={placeholder}
                           onChange={(event) => onFieldChange(field.fieldKey, event.target.value)}
                         />
                       )}
@@ -134,7 +137,7 @@ export function ReviewDetailsTab({
                   );
                 })}
             </div>
-          </div>
+          </details>
         ))}
     </>
   );

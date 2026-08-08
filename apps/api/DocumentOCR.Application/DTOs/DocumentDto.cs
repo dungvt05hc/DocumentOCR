@@ -13,6 +13,7 @@ public class DocumentDto
     public int PageCount { get; set; }
     public DocumentStatus Status { get; set; }
     public DocumentType DocumentType { get; set; }
+    public DocumentDirection Direction { get; set; }
     public string? ErrorMessage { get; set; }
     public int WarningCount { get; set; }
     public DateTime? ProcessingStartedAt { get; set; }

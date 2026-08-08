@@ -1031,12 +1031,50 @@ textarea:focus {
   margin-bottom: 20px;
 }
 
-.review-section h3 {
+.review-section h3,
+.review-section summary {
   margin: 0 0 10px;
   font-size: 13.5px;
   color: var(--color-text);
   text-transform: uppercase;
   letter-spacing: 0.02em;
+}
+
+.review-section summary {
+  cursor: pointer;
+  user-select: none;
+}
+
+.tax-breakdown-table {
+  margin-bottom: 10px;
+}
+
+.tax-breakdown-table select,
+.tax-breakdown-table input {
+  width: 100%;
+  border: 1px solid transparent;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+}
+
+.tax-breakdown-table select:focus,
+.tax-breakdown-table input:focus {
+  border-color: var(--color-border);
+  outline: none;
+}
+
+.direction-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.direction-select select {
+  font: inherit;
+  color: var(--color-text);
 }
 
 .detected-table {
