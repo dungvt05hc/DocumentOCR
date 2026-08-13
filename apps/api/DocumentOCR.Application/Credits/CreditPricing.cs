@@ -13,6 +13,7 @@ namespace DocumentOCR.Application.Credits;
 public static class CreditPricing
 {
     public const string PdfTextLayerProviderName = "PdfTextLayer";
+    public const string PdfTextLayerLlmProviderName = "PdfTextLayerLlm";
     public const string StructuredXmlProviderName = "TT78Xml";
 
     /// <summary>
@@ -35,6 +36,7 @@ public static class CreditPricing
     {
         StructuredXmlProviderName => options.XmlParse,
         PdfTextLayerProviderName => options.PdfTextLayer,
+        PdfTextLayerLlmProviderName => options.PdfTextLayerLlm,
         _ => options.OcrExtraction
     };
 

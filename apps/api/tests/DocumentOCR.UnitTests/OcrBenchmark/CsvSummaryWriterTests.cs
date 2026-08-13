@@ -25,6 +25,8 @@ public class CsvSummaryWriterTests
         TableCount: 1,
         KeyValuePairCount: 5,
         AverageConfidence: 0.9876,
+        EstimatedCost: 0.0123m,
+        RejectedFieldCount: 1,
         ExtractedSupplierName: "CÔNG TY TNHH ABC",
         ExpectedSupplierName: "CONG TY TNHH ABC",
         SupplierNameMatched: supplierNameMatched,
@@ -68,6 +70,7 @@ public class CsvSummaryWriterTests
                 "FileName,DocumentCategory,ProviderName,ModelId,Features," +
                 "ProcessingDurationMs,PageCount,FullTextLength,LineCount,WordCount," +
                 "ParagraphCount,TableCount,KeyValuePairCount,AverageConfidence," +
+                "EstimatedCost,RejectedFieldCount," +
                 "ExtractedSupplierName,ExpectedSupplierName,SupplierNameMatched," +
                 "ExtractedSupplierTaxCode,ExpectedSupplierTaxCode,TaxCodeMatched," +
                 "ExtractedInvoiceNumber,ExpectedInvoiceNumber,InvoiceNumberMatched," +
@@ -97,7 +100,7 @@ public class CsvSummaryWriterTests
 
             Assert.Equal(
                 "invoice1.pdf,VatInvoice,Fake,prebuilt-invoice,keyValuePairs,123.456,1,42,8,30," +
-                "3,1,5,0.9876,CÔNG TY TNHH ABC,CONG TY TNHH ABC,True," +
+                "3,1,5,0.9876,0.012300,1,CÔNG TY TNHH ABC,CONG TY TNHH ABC,True," +
                 "0100109106,0100109106,True," +
                 "0001234,0001234,True," +
                 "2024-12-31,2024-12-31,True," +
@@ -144,7 +147,7 @@ public class CsvSummaryWriterTests
 
             Assert.Equal(
                 "invoice1.pdf,VatInvoice,Fake,prebuilt-invoice,keyValuePairs,123.456,1,42,8,30," +
-                "3,1,5,0.9876,CÔNG TY TNHH ABC,,," +
+                "3,1,5,0.9876,0.012300,1,CÔNG TY TNHH ABC,,," +
                 "0100109106,,," +
                 "0001234,,," +
                 "2024-12-31,,," +

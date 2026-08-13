@@ -222,6 +222,7 @@ public class DocumentReviewMappingService
         return new ReviewField
         {
             FieldKey = definition.FieldKey,
+            StorageFieldName = field.FieldName,
             Label = definition.Label,
             Value = field.NormalizedValue ?? field.RawValue,
             RawValue = field.RawValue,

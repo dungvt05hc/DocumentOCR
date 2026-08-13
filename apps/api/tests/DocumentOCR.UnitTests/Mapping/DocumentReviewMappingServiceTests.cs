@@ -25,6 +25,11 @@ public class DocumentReviewMappingServiceTests
         var sellerName = Assert.Single(sellerSection.Fields, f => f.FieldKey == "SellerName");
         Assert.False(sellerName.IsMissing);
         Assert.Equal("CONG TY ABC", sellerName.Value);
+
+        // FieldKey ("SellerName") is only the profile-facing label — the client must save edits
+        // against StorageFieldName ("SupplierName"), the actual underlying ExtractedField row, or
+        // it creates a shadow duplicate instead of updating this one.
+        Assert.Equal(nameof(FieldName.SupplierName), sellerName.StorageFieldName);
     }
 
     [Fact]

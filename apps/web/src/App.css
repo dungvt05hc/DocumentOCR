@@ -777,8 +777,207 @@ textarea:focus {
   object-fit: contain;
 }
 
+.preview-pane.is-xml {
+  display: block;
+  place-items: initial;
+}
+
 .preview-empty {
   color: var(--color-text-muted);
+}
+
+/* ---------- XML preview ---------- */
+
+.xml-viewer {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.xml-viewer-toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.xml-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 200px;
+  min-width: 160px;
+  color: var(--color-text-muted);
+}
+
+.xml-search input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  padding: 4px 0;
+  font-size: 13px;
+  color: var(--color-text);
+}
+
+.xml-search input:focus {
+  outline: none;
+}
+
+.xml-search-count {
+  font-size: 12px;
+  white-space: nowrap;
+  color: var(--color-text-faint);
+}
+
+.xml-viewer-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.xml-viewer-actions button,
+.xml-viewer-actions a.btn-icon-text {
+  padding: 6px 10px;
+  font-size: 12.5px;
+}
+
+.xml-viewer-actions a.btn-icon-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface);
+  color: var(--color-text);
+  border-radius: var(--radius-sm);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.xml-viewer-actions a.btn-icon-text:hover {
+  background: var(--color-surface-sunken);
+}
+
+.xml-viewer-meta {
+  flex: none;
+  display: flex;
+  gap: var(--space-3);
+  padding: 6px 14px;
+  font-size: 11.5px;
+  color: var(--color-text-faint);
+  background: var(--color-surface-sunken);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.xml-viewer-body {
+  flex: 1;
+  overflow: auto;
+  padding: 12px 14px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+
+.xml-row {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.xml-row-spacer {
+  display: inline-block;
+  width: 17px;
+  flex: none;
+}
+
+.xml-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 20px;
+  flex: none;
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: transform 120ms ease;
+}
+
+.xml-toggle.is-open {
+  transform: rotate(90deg);
+}
+
+.xml-tag {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.xml-attr-name {
+  color: var(--color-info);
+}
+
+.xml-attr-value {
+  color: var(--color-success);
+}
+
+.xml-text {
+  color: var(--color-text);
+}
+
+.xml-punct {
+  color: var(--color-text-faint);
+}
+
+.xml-collapsed-summary {
+  border: none;
+  background: transparent;
+  padding: 0 4px;
+  font: inherit;
+  font-style: italic;
+  color: var(--color-text-faint);
+  cursor: pointer;
+}
+
+.xml-collapsed-summary:hover {
+  color: var(--color-text-muted);
+}
+
+.xml-truncate-toggle {
+  border: none;
+  background: transparent;
+  padding: 0 0 0 6px;
+  font-size: 11.5px;
+  color: var(--color-primary);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.xml-mark {
+  background: var(--color-warning-soft);
+  color: var(--color-text);
+  border-radius: 3px;
+  padding: 0 1px;
+}
+
+.xml-parse-error {
+  color: var(--color-danger);
+  margin-bottom: var(--space-2);
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+
+.xml-raw-fallback {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
 }
 
 .fields-pane {

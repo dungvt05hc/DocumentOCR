@@ -650,3 +650,82 @@ real invoice content) is available to run `PdfTextLayerProviderTests`'
 `AnalyzeAsync_MisaEInvoiceSample_ExtractsExpectedFieldsWhenFixturePresent` for real; until then it's
 a no-op guarded by `File.Exists`. Also revisit the fixed 0.95 word confidence and the 100-character
 scan threshold if real samples show either needs tuning.
+
+---
+
+## 2026-08-13 — Third extraction path: PDF text-layer + LLM, unified behind an `IDocumentExtractionStrategy`
+
+**Decision:**
+Added a third way to turn an upload into `ExtractedField`s — reading a software-generated PDF's
+text layer (reusing `PdfTextLayerProvider`, see the 2026-08-05 entry) and handing that text to an
+LLM (Google Gemini, native `responseSchema` structured output, `temperature = 0`) for field
+recognition, instead of the heuristic `FieldExtractionService` the OCR path uses. Doing this
+required first refactoring the two existing paths (structured XML, OCR) into a common
+`IDocumentExtractionStrategy` (`Name`/`Priority`/`CanHandleAsync`/`ExtractAsync`) so
+`DocumentProcessingService.ProcessAsync` has one selection/persistence loop instead of two
+hand-written branches. Concrete strategies, in `Priority` order: `XmlInvoiceStrategy` (0, thin
+adapter over the existing `IStructuredInvoiceParser`), `PdfTextLayerLlmStrategy` (50, new),
+`OcrStrategy` (100, catch-all — wraps the existing `IDocumentOcrProvider` chain and
+`FieldExtractionService` verbatim).
+
+**Reason:**
+A software-generated e-invoice PDF has no schema to parse directly (unlike TT78 XML), but its text
+is exact — running an LLM over that exact text should out-perform `FieldExtractionService`'s
+line-proximity/regex heuristics without the cost/latency of real OCR. Doing this as a fourth
+`IDocumentOcrProvider` (like `PdfTextLayerProvider` itself) was rejected: an OCR provider only
+returns `NormalizedOcrDocument` for the *existing* heuristic extractor to guess from, and there was
+no clean way to swap in LLM-based field mapping at that layer without `FieldExtractionService`
+somehow knowing to trust an LLM's opinion over its own heuristics. Promoting the seam one level up
+— to "how does a whole document become fields" — needed a real strategy abstraction, which is why
+the XML and OCR paths were unified into the same interface rather than adding a third special case
+to `DocumentProcessingService`.
+
+**Impact:**
+- `StructuredInvoiceResult` was renamed/extended into `Application.Models.StructuredExtractionResult`
+  — one shape covering XML's original fields (`RawSourceText`, `InvoiceTemplateCode`/`InvoiceSerial`)
+  plus what `OcrStrategy` needs to persist (`Pages`, `Tables`, `ProviderName`/`ModelId`/`PageCount`/
+  `ProcessingTimeMs`/`EstimatedCost`/`RawResponsePath`/`NormalizedResultPath`, mapping 1:1 onto
+  `OcrProviderLog`) and what benchmarking needs (`RejectedFieldCount`). `IStructuredInvoiceParser`
+  now returns this type directly — no separate mapping layer.
+- `ProcessAsync` tries strategies in `Priority` order; a strategy returning `Success = false` from
+  `ExtractAsync` (caught exceptions included) is treated the same as `CanHandleAsync` returning
+  false — the loop just tries the next candidate. This is what makes "LLM times out/errors → falls
+  through to `OcrStrategy`" work with no special-casing: `OcrStrategy.CanHandleAsync` is `true` for
+  anything that isn't an XML upload (reusing `CreditPricing.IsXmlUpload`), so it's always the last
+  resort and the document can never end up stuck in `Processing`. Every attempted strategy (not
+  just the winner) gets its own `OcrProviderLog` row, so "LLM tried and failed, then Azure OCR
+  succeeded" is visible in the audit trail as two rows, not one.
+- `PdfTextLayerLlmStrategy` never trusts the LLM's output directly: every non-null field value must
+  have a `sourceText` that verifies (whitespace-normalized substring match) against the PDF's own
+  extracted text, or the field is dropped and only its name is logged — never the value. Confidence
+  is always computed in code from verification + format checks (money/date parse, tax-code digit
+  count) + a cross-field amount-consistency check (`|subtotal + vat − total| ≤ 1 VND`), never read
+  from the LLM. **MST format, not checksum**: no authoritative published algorithm for the
+  Vietnamese 10-digit tax-code check digit could be found (web search came up empty; a half-remembered
+  weight table was deliberately not implemented rather than risk silently wrong pass/fail results) —
+  confidence 0.9 requires 10-or-13-digit format only, matching `FieldValidationService`'s existing
+  rule exactly. Revisit if an authoritative source turns up.
+- Responses are cached by (SHA-256 of the whitespace-normalized extracted text, model) in a new
+  `LlmExtractionCache` table/`ILlmExtractionCache` — a cache hit still re-runs the full
+  verification/confidence pipeline on the current text, only the network call is skipped, so caching
+  can never bypass anti-hallucination checks.
+- Reuses the credit pre-charge/refund mechanism the 2026-08-05 `PdfTextLayer` entry established
+  with zero new logic: a new `CreditOptions.PdfTextLayerLlm` (default 2, same as `OcrExtraction`)
+  and `CreditPricing.PdfTextLayerLlmProviderName` slot into the existing
+  `ResolveActualCost`/`RefundFreePathDifferenceAsync` switch.
+- `Llm:Enabled` defaults `false` (checked in `PdfTextLayerLlmStrategy.CanHandleAsync`), so no
+  behavior changes for any existing deployment until explicitly turned on — PDFs keep going through
+  `PdfProviderRouter`/`OcrStrategy` exactly as before. `Llm:ApiKey` only via user-secrets/env, never
+  committed, same as Azure/Paddle.
+- `DocumentOCR.OcrBenchmark` gained a `--pairs <file>` pass (`pairs.csv`: `XmlFile,PdfFile`
+  columns): for each pair, the XML is parsed with `TT78XmlInvoiceParser` (full confidence, direct
+  schema read) and used as ground truth — instead of a hand-typed CSV — to score
+  `PdfTextLayerLlmStrategy` and every configured Azure/Fake/Paddle target against a verified-correct
+  baseline, writing `pairs-summary.csv`. `BenchmarkCsvRow` gained `EstimatedCost` and
+  `RejectedFieldCount` columns (the latter populated only by the LLM strategy — 0 elsewhere).
+
+**Revisit when:**
+A real Vietnamese e-invoice PDF+XML pair sample is available to run the `--pairs` benchmark for
+real and tune `Llm:Model`/`PricePerMillionInput|OutputTokensUsd` from actual Gemini pricing (both
+default to 0 today — `EstimatedCost` reports 0 until set). Also revisit the MST format-only
+confidence rule if an authoritative checksum algorithm becomes available.

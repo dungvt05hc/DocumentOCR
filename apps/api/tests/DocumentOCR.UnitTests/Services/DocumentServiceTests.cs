@@ -77,6 +77,67 @@ public class DocumentServiceTests
     }
 
     [Fact]
+    public async Task UpdateFieldsAsync_ResubmittingUnchangedValue_DoesNotMarkFieldEdited()
+    {
+        // The review UI resubmits every field on every save, not just the ones the user actually
+        // touched — the service, not the client, must be the source of truth for "edited".
+        await using var db = CreateDbContext();
+        var document = await SeedDocumentAsync(db, doc =>
+        {
+            doc.Fields.Add(Field(doc.Id, FieldName.SupplierName, "CÔNG TY ABC"));
+            doc.Fields.Add(Field(doc.Id, FieldName.SupplierTaxCode, "0100109106"));
+        });
+        var sut = CreateSut(db);
+        var request = new UpdateFieldsRequest
+        {
+            Fields =
+            [
+                new FieldUpdateItem { FieldName = nameof(FieldName.SupplierName), NormalizedValue = "  CÔNG TY ABC  " },
+                new FieldUpdateItem { FieldName = nameof(FieldName.SupplierTaxCode), NormalizedValue = "0100109106" }
+            ]
+        };
+
+        await sut.UpdateFieldsAsync(document.Id, OrganizationId, request);
+
+        var reloaded = await db.Documents.Include(d => d.Fields).SingleAsync(d => d.Id == document.Id);
+        Assert.All(reloaded.Fields, f => Assert.False(f.IsEditedByUser));
+        Assert.All(reloaded.Fields, f => Assert.Equal(0.95, f.Confidence));
+    }
+
+    [Fact]
+    public async Task UpdateFieldsAsync_OneFieldChanged_OnlyThatFieldMarkedEditedOthersKeepConfidence()
+    {
+        await using var db = CreateDbContext();
+        var document = await SeedDocumentAsync(db, doc =>
+        {
+            doc.Fields.Add(Field(doc.Id, FieldName.SupplierName, "CÔNG TY ABC"));
+            doc.Fields.Add(Field(doc.Id, FieldName.SupplierTaxCode, "0100109106"));
+        });
+        var sut = CreateSut(db);
+        var request = new UpdateFieldsRequest
+        {
+            Fields =
+            [
+                new FieldUpdateItem { FieldName = nameof(FieldName.SupplierName), NormalizedValue = "CÔNG TY XYZ" },
+                new FieldUpdateItem { FieldName = nameof(FieldName.SupplierTaxCode), NormalizedValue = "0100109106" }
+            ]
+        };
+
+        await sut.UpdateFieldsAsync(document.Id, OrganizationId, request);
+
+        var reloaded = await db.Documents.Include(d => d.Fields).SingleAsync(d => d.Id == document.Id);
+        var name = Assert.Single(reloaded.Fields, f => f.FieldName == nameof(FieldName.SupplierName));
+        var taxCode = Assert.Single(reloaded.Fields, f => f.FieldName == nameof(FieldName.SupplierTaxCode));
+
+        Assert.True(name.IsEditedByUser);
+        Assert.NotNull(name.EditedAt);
+        Assert.False(taxCode.IsEditedByUser);
+        Assert.Null(taxCode.EditedAt);
+        Assert.Equal(0.95, name.Confidence);
+        Assert.Equal(0.95, taxCode.Confidence);
+    }
+
+    [Fact]
     public async Task UpdateFieldsAsync_AfterSaving_StatusIsReviewed()
     {
         await using var db = CreateDbContext();

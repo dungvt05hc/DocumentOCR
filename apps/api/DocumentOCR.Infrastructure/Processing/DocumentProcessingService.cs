@@ -1,12 +1,9 @@
-using System.Diagnostics;
-using System.Text;
 using System.Text.Json;
 using DocumentOCR.Application.Credits;
 using DocumentOCR.Application.Interfaces;
 using DocumentOCR.Application.Models;
 using DocumentOCR.Domain.Entities;
 using DocumentOCR.Domain.Enums;
-using DocumentOCR.Infrastructure.Ocr;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -15,50 +12,41 @@ using Npgsql;
 namespace DocumentOCR.Infrastructure.Processing;
 
 /// <summary>
-/// Orchestrates the full document processing pipeline: structured-format fast path (e.g. TT78
-/// invoice XML) when available, OCR pipeline otherwise. Catches its own failures internally
-/// (never rethrows), so <c>Status = Failed</c> set here is this system's only notion of
-/// "processing failed permanently" — Hangfire's <c>[AutomaticRetry]</c> on the calling job never
-/// actually re-runs a business-logic failure, only an exception this method didn't catch.
+/// Orchestrates the full document processing pipeline: resolves every registered
+/// <see cref="IDocumentExtractionStrategy"/> (XML fast path, PDF-text-layer+LLM, OCR — see
+/// <c>docs/decisions.md</c>), tries them in <c>Priority</c> order, then normalizes/validates/
+/// persists whichever one succeeds. Catches its own failures internally (never rethrows), so
+/// <c>Status = Failed</c> set here is this system's only notion of "processing failed
+/// permanently" — Hangfire's <c>[AutomaticRetry]</c> on the calling job never actually re-runs a
+/// business-logic failure, only an exception this method didn't catch.
 /// </summary>
 public class DocumentProcessingService : IDocumentProcessingService
 {
-    private const string StructuredInvoiceProviderName = CreditPricing.StructuredXmlProviderName;
-
     private readonly IApplicationDbContext _db;
     private readonly IDocumentStorageService _storage;
-    private readonly IDocumentOcrProvider _ocrProvider;
-    private readonly IFieldExtractionService _extraction;
+    private readonly IReadOnlyList<IDocumentExtractionStrategy> _strategies;
     private readonly IFieldNormalizationService _normalization;
     private readonly IFieldValidationService _validation;
-    private readonly IStructuredInvoiceParser _structuredInvoiceParser;
     private readonly ICreditService _creditService;
-    private readonly OcrOptions _ocrOptions;
     private readonly CreditOptions _creditOptions;
     private readonly ILogger<DocumentProcessingService> _logger;
 
     public DocumentProcessingService(
         IApplicationDbContext db,
         IDocumentStorageService storage,
-        IDocumentOcrProvider ocrProvider,
-        IFieldExtractionService extraction,
+        IEnumerable<IDocumentExtractionStrategy> strategies,
         IFieldNormalizationService normalization,
         IFieldValidationService validation,
-        IStructuredInvoiceParser structuredInvoiceParser,
         ICreditService creditService,
-        IOptions<OcrOptions> ocrOptions,
         IOptions<CreditOptions> creditOptions,
         ILogger<DocumentProcessingService> logger)
     {
         _db = db;
         _storage = storage;
-        _ocrProvider = ocrProvider;
-        _extraction = extraction;
+        _strategies = strategies.OrderBy(s => s.Priority).ToList();
         _normalization = normalization;
         _validation = validation;
-        _structuredInvoiceParser = structuredInvoiceParser;
         _creditService = creditService;
-        _ocrOptions = ocrOptions.Value;
         _creditOptions = creditOptions.Value;
         _logger = logger;
     }
@@ -103,25 +91,37 @@ public class DocumentProcessingService : IDocumentProcessingService
 
             await using var fileStream = await _storage.GetStreamAsync(document.StoredFilePath, ct);
 
-            var useStructuredParser = _structuredInvoiceParser.CanParse(document.ContentType, document.OriginalFileName);
-            var selectedProviderName = useStructuredParser ? StructuredInvoiceProviderName : _ocrProvider.ProviderName;
+            var input = new DocumentInput
+            {
+                Content = fileStream,
+                FileName = document.OriginalFileName,
+                ContentType = document.ContentType,
+                FileSizeBytes = document.FileSizeBytes
+            };
 
-            // Permanent diagnostic log (not temporary) — the single place that records which
-            // branch/provider a given upload actually took, so a stuck-in-Processing report can
-            // be traced back to "which path did this take" without guessing.
-            _logger.LogInformation(
-                "Processing branch selected for document {DocumentId} ({FileName}, ContentType={ContentType}): " +
-                "{Branch} via provider {ProviderName}",
-                documentId,
-                document.OriginalFileName,
-                document.ContentType,
-                useStructuredParser ? "StructuredXml" : "Ocr",
-                selectedProviderName);
+            var result = await RunStrategiesAsync(documentId, input, ct);
 
-            if (useStructuredParser)
-                await ProcessStructuredInvoiceAsync(document, fileStream, ct);
-            else
-                await ProcessViaOcrAsync(document, fileStream, ct);
+            if (!result.Success)
+            {
+                document.Status = DocumentStatus.Failed;
+                document.ErrorMessage = string.IsNullOrWhiteSpace(result.ErrorMessage)
+                    ? "Document processing failed without an error message."
+                    : result.ErrorMessage;
+                document.ProcessingCompletedAt = DateTime.UtcNow;
+                document.UpdatedAt = DateTime.UtcNow;
+
+                await SaveChangesWithDiagnosticsAsync(documentId, "ProcessAsync:FailureSave", ct);
+
+                _logger.LogWarning(
+                    "Document {DocumentId} marked Failed — no extraction strategy succeeded. Last error: {ErrorMessage}",
+                    documentId,
+                    document.ErrorMessage);
+
+                await RefundProcessingCreditsAsync(document, CancellationToken.None);
+                return;
+            }
+
+            await PersistSuccessfulResultAsync(document, result, ct);
         }
         catch (Exception ex)
         {
@@ -132,6 +132,138 @@ public class DocumentProcessingService : IDocumentProcessingService
 
             await RefundProcessingCreditsAsync(document, CancellationToken.None);
         }
+    }
+
+    /// <summary>
+    /// Tries every registered strategy in <c>Priority</c> order. A strategy that claims a document
+    /// via <see cref="IDocumentExtractionStrategy.CanHandleAsync"/> but fails at
+    /// <see cref="IDocumentExtractionStrategy.ExtractAsync"/> (parse error, LLM timeout, ...) falls
+    /// through to the next candidate rather than failing the document immediately — see
+    /// <see cref="IDocumentExtractionStrategy"/>'s remarks. Every attempt (success or failure) gets
+    /// its own <see cref="OcrProviderLog"/> row, so a "LLM tried and timed out, fell back to Azure
+    /// OCR, which succeeded" run is fully auditable, not just the winning attempt.
+    /// </summary>
+    private async Task<StructuredExtractionResult> RunStrategiesAsync(Guid documentId, DocumentInput input, CancellationToken ct)
+    {
+        StructuredExtractionResult? lastResult = null;
+
+        foreach (var strategy in _strategies)
+        {
+            bool canHandle;
+            try
+            {
+                canHandle = await strategy.CanHandleAsync(input, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex, "Strategy {StrategyName} threw from CanHandleAsync for document {DocumentId}; skipping.",
+                    strategy.Name, documentId);
+                continue;
+            }
+
+            if (!canHandle) continue;
+
+            input.Content.Position = 0;
+
+            // No try/catch here, unlike CanHandleAsync above: per IDocumentExtractionStrategy's
+            // contract, a strategy must catch its own expected failure modes (parse error,
+            // provider timeout) and return Success = false — see PdfTextLayerLlmStrategy's Gemini
+            // timeout handling. An exception escaping ExtractAsync means something genuinely
+            // unexpected happened, and should propagate to ProcessAsync's outer catch (generic
+            // failure message, MarkFailedAsync) exactly as before this pipeline had strategies.
+            var result = await strategy.ExtractAsync(input, ct);
+
+            _logger.LogInformation(
+                "Extraction strategy {StrategyName} attempted for document {DocumentId}: Success={Success}, Provider={ProviderName}",
+                strategy.Name, documentId, result.Success, result.ProviderName);
+
+            _db.OcrProviderLogs.Add(new OcrProviderLog
+            {
+                DocumentId = documentId,
+                ProviderName = result.ProviderName,
+                ModelId = result.ModelId,
+                PageCount = result.PageCount,
+                ProcessingTimeMs = result.ProcessingTimeMs,
+                EstimatedCost = result.EstimatedCost,
+                Success = result.Success,
+                ErrorMessage = result.ErrorMessage,
+                RawResponseJson = result.RawResponseJson,
+                RawResponsePath = result.RawResponsePath,
+                NormalizedResultPath = result.NormalizedResultPath
+            });
+
+            lastResult = result;
+
+            if (result.Success) return result;
+        }
+
+        return lastResult ?? new StructuredExtractionResult
+        {
+            Success = false,
+            ErrorMessage = $"No extraction strategy could handle content type '{input.ContentType}'.",
+            ProviderName = "None"
+        };
+    }
+
+    private async Task PersistSuccessfulResultAsync(Document document, StructuredExtractionResult result, CancellationToken ct)
+    {
+        var documentId = document.Id;
+
+        foreach (var page in result.Pages)
+        {
+            _db.DocumentPages.Add(new DocumentPage
+            {
+                DocumentId = documentId,
+                PageNumber = page.PageNumber,
+                RawText = page.FullText
+            });
+        }
+
+        document.TablesJson = result.Tables is { Count: > 0 }
+            ? JsonSerializer.Serialize(result.Tables)
+            : null;
+
+        // Safe no-op for fields a strategy already normalized itself (NormalizeFields skips any
+        // field with a NormalizedValue already set) — still does real work for fields the strategy
+        // left un-normalized (e.g. XML's InvoiceDate/SupplierTaxCode).
+        _normalization.NormalizeFields(result.Fields);
+
+        foreach (var field in result.Fields)
+        {
+            field.DocumentId = documentId;
+            _db.ExtractedFields.Add(field);
+        }
+
+        foreach (var taxLine in result.TaxBreakdown)
+        {
+            taxLine.DocumentId = documentId;
+            _db.InvoiceTaxBreakdowns.Add(taxLine);
+        }
+
+        var warnings = _validation.Validate(documentId, result.Fields);
+        foreach (var warning in warnings)
+            _db.ValidationWarnings.Add(warning);
+
+        document.DocumentType = GetDetectedDocumentType(result.Fields);
+        document.Status = DocumentStatus.Processed;
+        document.PageCount = result.PageCount;
+        document.ProcessingCompletedAt = DateTime.UtcNow;
+        document.UpdatedAt = DateTime.UtcNow;
+
+        await SaveChangesWithDiagnosticsAsync(documentId, "ProcessAsync:FinalSave", ct);
+
+        _logger.LogInformation(
+            "Document {DocumentId} processed successfully via {ProviderName}. Status={Status}, DocumentType={DocumentType}, Pages={PageCount}, Fields={FieldCount}, Warnings={WarningCount}",
+            documentId,
+            result.ProviderName,
+            document.Status,
+            document.DocumentType,
+            document.PageCount,
+            result.Fields.Count,
+            warnings.Count);
+
+        await RefundFreePathDifferenceAsync(document, result.ProviderName, ct);
     }
 
     /// <summary>
@@ -219,315 +351,6 @@ public class DocumentProcessingService : IDocumentProcessingService
         }
     }
 
-    private async Task ProcessViaOcrAsync(Document document, Stream fileStream, CancellationToken ct)
-    {
-        var documentId = document.Id;
-
-        var ocrInput = new DocumentInput
-        {
-            Content = fileStream,
-            FileName = document.OriginalFileName,
-            ContentType = document.ContentType,
-            FileSizeBytes = document.FileSizeBytes
-        };
-
-        _logger.LogInformation(
-            "Calling OCR provider {ProviderName} for document {DocumentId}",
-            _ocrProvider.ProviderName,
-            documentId);
-
-        var ocrResult = await AnalyzeWithTimeoutAsync(ocrInput, documentId, ct);
-
-        _logger.LogInformation(
-            "OCR provider {ProviderName} (Model={ModelId}) completed for document {DocumentId}. Success={Success}, Pages={PageCount}, DurationMs={ProcessingTimeMs}, EstimatedCost={EstimatedCost}",
-            _ocrProvider.ProviderName,
-            ocrResult.ModelId,
-            documentId,
-            ocrResult.Success,
-            ocrResult.PageCount,
-            ocrResult.ProcessingTimeMs,
-            ocrResult.EstimatedCost);
-
-        ocrResult = await PersistOcrArtifactsAsync(documentId, ocrResult, ct);
-
-        _db.OcrProviderLogs.Add(new OcrProviderLog
-        {
-            DocumentId = documentId,
-            // ocrResult.ProviderName (not _ocrProvider.ProviderName) so the audit trail reflects
-            // which branch actually produced this result when the injected provider is
-            // PdfProviderRouter (e.g. "PdfTextLayer" vs. the configured OCR provider it fell back to).
-            ProviderName = ocrResult.ProviderName,
-            ModelId = ocrResult.ModelId,
-            PageCount = ocrResult.PageCount,
-            ProcessingTimeMs = ocrResult.ProcessingTimeMs,
-            EstimatedCost = ocrResult.EstimatedCost,
-            Success = ocrResult.Success,
-            ErrorMessage = ocrResult.ErrorMessage,
-            RawResponseJson = _ocrOptions.StoreRawProviderResponse ? ocrResult.RawProviderResponseJson : null,
-            RawResponsePath = ocrResult.RawProviderResponsePath,
-            NormalizedResultPath = ocrResult.NormalizedOcrResultPath
-        });
-
-        if (!ocrResult.Success)
-        {
-            document.Status = DocumentStatus.Failed;
-            document.ErrorMessage = string.IsNullOrWhiteSpace(ocrResult.ErrorMessage)
-                ? "OCR provider failed without an error message."
-                : ocrResult.ErrorMessage;
-            document.ProcessingCompletedAt = DateTime.UtcNow;
-            document.UpdatedAt = DateTime.UtcNow;
-
-            await SaveChangesWithDiagnosticsAsync(documentId, "ProcessViaOcrAsync:FailureSave", ct);
-
-            _logger.LogWarning(
-                "Document {DocumentId} marked Failed because OCR provider {ProviderName} returned an unsuccessful result: {ErrorMessage}",
-                documentId,
-                _ocrProvider.ProviderName,
-                document.ErrorMessage);
-
-            await RefundProcessingCreditsAsync(document, ct);
-
-            return;
-        }
-
-        await RefundFreePathDifferenceAsync(document, ocrResult.ProviderName, ct);
-
-        foreach (var page in ocrResult.Pages)
-        {
-            _db.DocumentPages.Add(new DocumentPage
-            {
-                DocumentId = documentId,
-                PageNumber = page.PageNumber,
-                RawText = page.FullText
-            });
-        }
-
-        document.TablesJson = ocrResult.Tables.Count > 0
-            ? JsonSerializer.Serialize(ocrResult.Tables)
-            : null;
-
-        var extractedFields = _extraction.Extract(documentId, ocrResult);
-        _logger.LogInformation(
-            "Extracted {FieldCount} fields for document {DocumentId}",
-            extractedFields.Count,
-            documentId);
-
-        _normalization.NormalizeFields(extractedFields);
-
-        // "VatRate" is a candidate-only key (see FieldExtractionService.AddVatRateLineCandidate) —
-        // consumed here to synthesize a tax-breakdown row, never persisted as an ExtractedField
-        // itself (no profile field references it, so it would otherwise land in "Other detected
-        // fields" for no reason).
-        var vatRateField = extractedFields.FirstOrDefault(f => f.FieldName == "VatRate");
-        var persistedFields = extractedFields.Where(f => f.FieldName != "VatRate").ToList();
-
-        foreach (var field in persistedFields)
-            _db.ExtractedFields.Add(field);
-
-        foreach (var taxLine in BuildOcrTaxBreakdown(documentId, vatRateField, persistedFields))
-            _db.InvoiceTaxBreakdowns.Add(taxLine);
-
-        var warnings = _validation.Validate(documentId, persistedFields);
-        foreach (var warning in warnings)
-            _db.ValidationWarnings.Add(warning);
-
-        document.DocumentType = GetDetectedDocumentType(persistedFields);
-        document.Status = DocumentStatus.Processed;
-        document.PageCount = ocrResult.PageCount;
-        document.ProcessingCompletedAt = DateTime.UtcNow;
-        document.UpdatedAt = DateTime.UtcNow;
-
-        await SaveChangesWithDiagnosticsAsync(documentId, "ProcessViaOcrAsync:FinalSave", ct);
-
-        _logger.LogInformation(
-            "Document {DocumentId} processed successfully. Status={Status}, DocumentType={DocumentType}, Pages={PageCount}, Fields={FieldCount}, Warnings={WarningCount}",
-            documentId,
-            document.Status,
-            document.DocumentType,
-            document.PageCount,
-            extractedFields.Count,
-            warnings.Count);
-    }
-
-    /// <summary>
-    /// Hard pipeline-level ceiling (<see cref="OcrOptions.CallTimeoutSeconds"/>, default 120s) on
-    /// a single <see cref="IDocumentOcrProvider.AnalyzeAsync"/> call, independent of whatever
-    /// timeout (if any) the provider enforces internally -- so a provider that hangs, or a future
-    /// provider that forgets its own timeout, can never leave a document stuck in
-    /// <see cref="DocumentStatus.Processing"/> forever. On expiry this returns a synthetic failed
-    /// result rather than throwing, so the normal "!ocrResult.Success" handling in
-    /// <see cref="ProcessViaOcrAsync"/> (Failed status + refund) takes care of the rest.
-    /// </summary>
-    private async Task<NormalizedOcrDocument> AnalyzeWithTimeoutAsync(
-        DocumentInput input, Guid documentId, CancellationToken ct)
-    {
-        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(_ocrOptions.CallTimeoutSeconds));
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
-
-        try
-        {
-            return await _ocrProvider.AnalyzeAsync(input, linkedCts.Token);
-        }
-        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
-        {
-            _logger.LogError(
-                "OCR provider {ProviderName} did not respond within {TimeoutSeconds}s for document {DocumentId}.",
-                _ocrProvider.ProviderName, _ocrOptions.CallTimeoutSeconds, documentId);
-
-            return new NormalizedOcrDocument
-            {
-                Success = false,
-                ProviderName = _ocrProvider.ProviderName,
-                ErrorMessage =
-                    $"OCR provider {_ocrProvider.ProviderName} did not respond within " +
-                    $"{_ocrOptions.CallTimeoutSeconds}s."
-            };
-        }
-    }
-
-    private async Task ProcessStructuredInvoiceAsync(Document document, Stream fileStream, CancellationToken ct)
-    {
-        var documentId = document.Id;
-        var stopwatch = Stopwatch.StartNew();
-
-        _logger.LogInformation(
-            "Parsing structured invoice XML for document {DocumentId} via {ProviderName}",
-            documentId,
-            StructuredInvoiceProviderName);
-
-        var parseResult = await _structuredInvoiceParser.ParseAsync(fileStream, ct);
-        stopwatch.Stop();
-
-        var rawXmlPath = await PersistRawXmlArtifactAsync(documentId, parseResult.RawXml, ct);
-
-        _db.OcrProviderLogs.Add(new OcrProviderLog
-        {
-            DocumentId = documentId,
-            ProviderName = StructuredInvoiceProviderName,
-            ModelId = StructuredInvoiceProviderName,
-            PageCount = 1,
-            ProcessingTimeMs = stopwatch.Elapsed.TotalMilliseconds,
-            EstimatedCost = 0m,
-            Success = parseResult.Success,
-            ErrorMessage = parseResult.ErrorMessage,
-            RawResponseJson = _ocrOptions.StoreRawProviderResponse ? JsonSerializer.Serialize(parseResult.RawXml) : null,
-            RawResponsePath = rawXmlPath
-        });
-
-        if (!parseResult.Success)
-        {
-            document.Status = DocumentStatus.Failed;
-            document.ErrorMessage = string.IsNullOrWhiteSpace(parseResult.ErrorMessage)
-                ? "Structured invoice parser failed without an error message."
-                : parseResult.ErrorMessage;
-            document.ProcessingCompletedAt = DateTime.UtcNow;
-            document.UpdatedAt = DateTime.UtcNow;
-
-            await SaveChangesWithDiagnosticsAsync(documentId, "ProcessStructuredInvoiceAsync:FailureSave", ct);
-
-            _logger.LogWarning(
-                "Document {DocumentId} marked Failed because structured XML parsing failed: {ErrorMessage}",
-                documentId,
-                document.ErrorMessage);
-
-            await RefundProcessingCreditsAsync(document, ct);
-
-            return;
-        }
-
-        var extractedFields = parseResult.Fields;
-        foreach (var field in extractedFields)
-        {
-            field.DocumentId = documentId;
-            _db.ExtractedFields.Add(field);
-        }
-
-        _normalization.NormalizeFields(extractedFields);
-
-        foreach (var taxLine in parseResult.TaxBreakdown)
-        {
-            taxLine.DocumentId = documentId;
-            _db.InvoiceTaxBreakdowns.Add(taxLine);
-        }
-
-        var warnings = _validation.Validate(documentId, extractedFields);
-        foreach (var warning in warnings)
-            _db.ValidationWarnings.Add(warning);
-
-        // No OCR pages exist for a structured XML source, unlike the OCR pipeline which always
-        // produces at least one DocumentPage.
-        document.TablesJson = null;
-        document.DocumentType = GetDetectedDocumentType(extractedFields);
-        document.Status = DocumentStatus.Processed;
-        document.PageCount = 1;
-        document.ProcessingCompletedAt = DateTime.UtcNow;
-        document.UpdatedAt = DateTime.UtcNow;
-
-        await SaveChangesWithDiagnosticsAsync(documentId, "ProcessStructuredInvoiceAsync:FinalSave", ct);
-
-        _logger.LogInformation(
-            "Document {DocumentId} processed via structured XML parser. Status={Status}, DocumentType={DocumentType}, Fields={FieldCount}, Warnings={WarningCount}",
-            documentId,
-            document.Status,
-            document.DocumentType,
-            extractedFields.Count,
-            warnings.Count);
-    }
-
-    private async Task<string?> PersistRawXmlArtifactAsync(Guid documentId, string? rawXml, CancellationToken ct)
-    {
-        if (!_ocrOptions.StoreRawProviderResponse || string.IsNullOrWhiteSpace(rawXml))
-            return null;
-
-        using var stream = new MemoryStream(Encoding.UTF8.GetBytes(rawXml));
-        return await _storage.SaveAsync(stream, $"{documentId}-source.xml", "application/xml", ct);
-    }
-
-    private static readonly JsonSerializerOptions ArtifactJsonOptions = new()
-    {
-        WriteIndented = true,
-        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
-    };
-
-    /// <summary>
-    /// Writes the raw provider response and/or the full normalized OCR result to storage
-    /// (gated by <see cref="OcrOptions.StoreRawProviderResponse"/> / <see cref="OcrOptions.StoreNormalizedOcrResult"/>)
-    /// and returns an updated <see cref="NormalizedOcrDocument"/> carrying their storage paths.
-    /// A provider that returned an unsuccessful result has nothing meaningful to persist here.
-    /// </summary>
-    private async Task<NormalizedOcrDocument> PersistOcrArtifactsAsync(
-        Guid documentId, NormalizedOcrDocument ocrResult, CancellationToken ct)
-    {
-        if (!ocrResult.Success) return ocrResult;
-
-        string? rawPath = null;
-        if (_ocrOptions.StoreRawProviderResponse && !string.IsNullOrWhiteSpace(ocrResult.RawProviderResponseJson))
-        {
-            rawPath = await WriteJsonArtifactAsync(
-                ocrResult.RawProviderResponseJson, $"{documentId}-raw-response.json", ct);
-        }
-
-        string? normalizedPath = null;
-        if (_ocrOptions.StoreNormalizedOcrResult)
-        {
-            var normalizedJson = JsonSerializer.Serialize(ocrResult, ArtifactJsonOptions);
-            normalizedPath = await WriteJsonArtifactAsync(
-                normalizedJson, $"{documentId}-normalized-ocr-result.json", ct);
-        }
-
-        return ocrResult with
-        {
-            RawProviderResponsePath = rawPath,
-            NormalizedOcrResultPath = normalizedPath
-        };
-    }
-
-    private async Task<string> WriteJsonArtifactAsync(string json, string fileName, CancellationToken ct)
-    {
-        using var stream = new MemoryStream(Encoding.UTF8.GetBytes(json));
-        return await _storage.SaveAsync(stream, fileName, "application/json", ct);
-    }
-
     /// <summary>
     /// A document reaching <see cref="DocumentStatus.Failed"/> is this pipeline's only notion of
     /// "processing failed permanently" — see the class remarks on retry behavior. Refunds the
@@ -551,13 +374,14 @@ public class DocumentProcessingService : IDocumentProcessingService
     }
 
     /// <summary>
-    /// Whether a PDF ends up served for free (<c>PdfTextLayer</c>, reading the PDF's own embedded
-    /// text layer) or via paid OCR is only known once <see cref="IDocumentOcrProvider"/> has
-    /// actually run — unlike XML, which is priced free from the pre-charge at upload/reprocess
-    /// time (see <see cref="CreditPricing.ResolveCost"/>). So the upload/reprocess charge point
-    /// always holds the worst-case (OCR) price up front — preserving the pre-charge burn-loop
-    /// defense — and this reconciles it down to the true price after the fact, refunding the
-    /// difference when the actual provider turned out to be free.
+    /// Which concrete strategy ends up serving a PDF (free text-layer read vs. paid OCR/LLM) is
+    /// only known once extraction has actually run — unlike XML, which is priced free from the
+    /// pre-charge at upload/reprocess time (see <see cref="CreditPricing.ResolveCost"/>). So the
+    /// upload/reprocess charge point always holds the worst-case (OCR) price up front — preserving
+    /// the pre-charge burn-loop defense — and this reconciles it down to the true price after the
+    /// fact, refunding the difference when the actual provider turned out to be cheaper. A no-op
+    /// (refund of 0) for XML and any provider priced at or above the pre-charge, computed the same
+    /// way regardless of which strategy actually won.
     /// </summary>
     private async Task RefundFreePathDifferenceAsync(Document document, string actualProviderName, CancellationToken ct)
     {
@@ -595,44 +419,6 @@ public class DocumentProcessingService : IDocumentProcessingService
         foreach (var taxLine in document.TaxBreakdowns.ToList())
             _db.InvoiceTaxBreakdowns.Remove(taxLine);
     }
-
-    /// <summary>
-    /// Synthesizes a single tax-breakdown row from the OCR pipeline's best-effort "VatRate" line
-    /// candidate plus whatever Subtotal/VAT amounts were already extracted — mirrors what TT78 XML
-    /// always gets deterministically from THTTLTSuat, but only when a document-level rate was
-    /// actually recognized; otherwise the document simply has no breakdown rows (not a fabricated
-    /// one at 0/unknown).
-    /// </summary>
-    private List<InvoiceTaxBreakdown> BuildOcrTaxBreakdown(
-        Guid documentId, ExtractedField? vatRateField, IReadOnlyList<ExtractedField> fields)
-    {
-        if (vatRateField is null) return [];
-
-        var normalizedRate = _normalization.NormalizeVatRate(vatRateField.RawValue);
-        if (normalizedRate is null) return [];
-
-        var subtotal = fields.FirstOrDefault(f => f.FieldName == nameof(FieldName.SubtotalAmount));
-        var vat = fields.FirstOrDefault(f => f.FieldName == nameof(FieldName.VatAmount));
-
-        return
-        [
-            new InvoiceTaxBreakdown
-            {
-                DocumentId = documentId,
-                RawVatRate = vatRateField.RawValue,
-                VatRate = normalizedRate,
-                TaxableAmount = ParseDecimalOrNull(subtotal?.NormalizedValue),
-                TaxAmount = ParseDecimalOrNull(vat?.NormalizedValue),
-                Confidence = vatRateField.Confidence,
-                SortOrder = 0
-            }
-        ];
-    }
-
-    private static decimal? ParseDecimalOrNull(string? value) =>
-        decimal.TryParse(value, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var result)
-            ? result
-            : null;
 
     private static DocumentType GetDetectedDocumentType(IEnumerable<ExtractedField> fields)
     {

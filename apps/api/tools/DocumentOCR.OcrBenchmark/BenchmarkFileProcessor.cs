@@ -8,9 +8,13 @@ using DocumentOCR.Domain.Enums;
 namespace DocumentOCR.OcrBenchmark;
 
 /// <summary>
-/// Runs one OCR provider against one sample file, pushes the result through the same
-/// extraction/normalization/validation pipeline <c>DocumentProcessingService</c> uses (minus
-/// storage/DB), and writes the four debug JSON artifacts plus a CSV summary row.
+/// Runs one OCR provider (or, for PDF text-layer+LLM, one <see cref="IDocumentExtractionStrategy"/>)
+/// against one sample file, pushes the result through the same normalization/validation pipeline
+/// <c>DocumentProcessingService</c> uses (minus storage/DB), and writes debug JSON artifacts plus a
+/// CSV summary row. <see cref="ProcessAsync"/> and <see cref="ProcessStrategyAsync"/> share the
+/// ground-truth-matching/row-building tail via <see cref="BuildRow"/> — only how fields get
+/// extracted differs (heuristic <c>FieldExtractionService</c> over a raw OCR result vs. a
+/// strategy's own already-mapped fields).
 /// </summary>
 internal sealed class BenchmarkFileProcessor(
     IFieldExtractionService extraction,
@@ -55,25 +59,8 @@ internal sealed class BenchmarkFileProcessor(
         catch (Exception ex)
         {
             // A provider throwing (vs. returning Success=false) must not abort the whole batch.
-            await File.WriteAllTextAsync(
-                Path.Combine(outputDir, "ocr-result.json"),
-                $$"""{ "success": false, "errorMessage": {{JsonSerializer.Serialize(ex.Message)}} }""",
-                ct);
-
-            return new BenchmarkCsvRow(
-                fileName, DocumentCategory: null, provider.ProviderName, ModelId: null, Features: "",
-                ProcessingDurationMs: 0, PageCount: 0, FullTextLength: 0, LineCount: 0, WordCount: 0,
-                ParagraphCount: 0, TableCount: 0, KeyValuePairCount: 0, AverageConfidence: null,
-                ExtractedSupplierName: null, ExpectedSupplierName: groundTruth?.ExpectedSupplierName, SupplierNameMatched: null,
-                ExtractedSupplierTaxCode: null, ExpectedSupplierTaxCode: groundTruth?.ExpectedSupplierTaxCode, TaxCodeMatched: null,
-                ExtractedInvoiceNumber: null, ExpectedInvoiceNumber: groundTruth?.ExpectedInvoiceNumber, InvoiceNumberMatched: null,
-                ExtractedInvoiceDate: null, ExpectedInvoiceDate: groundTruth?.ExpectedInvoiceDate, InvoiceDateMatched: null,
-                ExtractedSubtotalAmount: null, ExpectedSubtotalAmount: groundTruth?.ExpectedSubtotalAmount, SubtotalMatched: null,
-                ExtractedVatAmount: null, ExpectedVatAmount: groundTruth?.ExpectedVatAmount, VatMatched: null,
-                ExtractedTotalAmount: null, ExpectedTotalAmount: groundTruth?.ExpectedTotalAmount, TotalMatched: null,
-                ExtractedCurrency: null, ExpectedCurrency: groundTruth?.ExpectedCurrency, CurrencyMatched: null,
-                FieldAccuracyPercent: null, WarningCount: 0,
-                RawProviderResponsePath: null, NormalizedOcrResultPath: null, ErrorMessage: ex.Message);
+            await WriteFailureArtifactAsync(outputDir, "ocr-result.json", ex.Message, ct);
+            return BuildFailureRow(fileName, provider.ProviderName, groundTruth, ex.Message);
         }
 
         var fields = extraction.Extract(documentId, ocrResult);
@@ -84,14 +71,129 @@ internal sealed class BenchmarkFileProcessor(
 
         var ocrResultPath = Path.Combine(outputDir, "ocr-result.json");
         await File.WriteAllTextAsync(ocrResultPath, JsonSerializer.Serialize(ocrResult, JsonOptions), ct);
+        await WriteFieldsAndWarningsAsync(outputDir, fields, warnings, ct);
 
-        await File.WriteAllTextAsync(
-            Path.Combine(outputDir, "extracted-fields.json"),
-            JsonSerializer.Serialize(fields, JsonOptions), ct);
-        await File.WriteAllTextAsync(
-            Path.Combine(outputDir, "validation-warnings.json"),
-            JsonSerializer.Serialize(warnings, JsonOptions), ct);
+        return BuildRow(
+            fileName: fileName,
+            providerName: provider.ProviderName,
+            modelId: ocrResult.ModelId,
+            features: string.Join('|', ocrResult.Features),
+            processingDurationMs: ocrResult.ProcessingTimeMs,
+            pageCount: ocrResult.PageCount,
+            fullTextLength: ocrResult.FullText.Length,
+            lineCount: ocrResult.Lines.Count,
+            wordCount: ocrResult.Words.Count,
+            paragraphCount: ocrResult.Paragraphs.Count,
+            tableCount: ocrResult.Tables.Count,
+            keyValuePairCount: ocrResult.KeyValuePairs.Count,
+            estimatedCost: ocrResult.EstimatedCost,
+            rejectedFieldCount: 0,
+            fields: fields,
+            warningCount: warnings.Count,
+            groundTruth: groundTruth,
+            rawResponsePath: rawResponsePath,
+            normalizedResultPath: ocrResultPath,
+            errorMessage: ocrResult.Success ? null : ocrResult.ErrorMessage);
+    }
 
+    /// <summary>
+    /// Same shape as <see cref="ProcessAsync"/> but for an <see cref="IDocumentExtractionStrategy"/>
+    /// (currently only used for the PDF text-layer+LLM strategy) — the strategy already returns
+    /// mapped <see cref="ExtractedField"/>s (with confidence/verification already applied), so
+    /// there's no <see cref="IFieldExtractionService.Extract"/> step here.
+    /// </summary>
+    public async Task<BenchmarkCsvRow> ProcessStrategyAsync(
+        IDocumentExtractionStrategy strategy,
+        Guid documentId,
+        byte[] fileBytes,
+        string fileName,
+        string contentType,
+        string outputDir,
+        CancellationToken ct,
+        GroundTruthRow? groundTruth = null)
+    {
+        Directory.CreateDirectory(outputDir);
+
+        StructuredExtractionResult result;
+        try
+        {
+            await using var content = new MemoryStream(fileBytes, writable: false);
+            var input = new DocumentInput
+            {
+                Content = content,
+                FileName = fileName,
+                ContentType = contentType,
+                FileSizeBytes = fileBytes.Length
+            };
+
+            result = await strategy.ExtractAsync(input, ct);
+        }
+        catch (Exception ex)
+        {
+            await WriteFailureArtifactAsync(outputDir, "extraction-result.json", ex.Message, ct);
+            return BuildFailureRow(fileName, strategy.Name, groundTruth, ex.Message);
+        }
+
+        var fields = result.Fields.ToList();
+        foreach (var field in fields)
+            field.DocumentId = documentId;
+
+        // Idempotent safety net matching DocumentProcessingService's own shared normalize step —
+        // PdfTextLayerLlmStrategy already pre-fills NormalizedValue for the fields it verifies.
+        normalization.NormalizeFields(fields);
+        var warnings = validation.Validate(documentId, fields);
+
+        await WriteFieldsAndWarningsAsync(outputDir, fields, warnings, ct);
+        var resultPath = Path.Combine(outputDir, "extraction-result.json");
+        await File.WriteAllTextAsync(resultPath, JsonSerializer.Serialize(result, JsonOptions), ct);
+
+        return BuildRow(
+            fileName: fileName,
+            providerName: result.ProviderName,
+            modelId: result.ModelId,
+            features: "",
+            processingDurationMs: result.ProcessingTimeMs,
+            pageCount: result.PageCount,
+            fullTextLength: result.RawSourceText?.Length ?? 0,
+            lineCount: 0,
+            wordCount: 0,
+            paragraphCount: 0,
+            tableCount: 0,
+            keyValuePairCount: 0,
+            estimatedCost: result.EstimatedCost,
+            rejectedFieldCount: result.RejectedFieldCount,
+            fields: fields,
+            warningCount: warnings.Count,
+            groundTruth: groundTruth,
+            rawResponsePath: null,
+            normalizedResultPath: resultPath,
+            errorMessage: result.Success ? null : result.ErrorMessage);
+    }
+
+    // ── Shared ground-truth matching + row building ─────────────────────────────
+
+    private static BenchmarkCsvRow BuildRow(
+        string fileName,
+        string providerName,
+        string? modelId,
+        string features,
+        double processingDurationMs,
+        int pageCount,
+        int fullTextLength,
+        int lineCount,
+        int wordCount,
+        int paragraphCount,
+        int tableCount,
+        int keyValuePairCount,
+        decimal estimatedCost,
+        int rejectedFieldCount,
+        IReadOnlyList<ExtractedField> fields,
+        int warningCount,
+        GroundTruthRow? groundTruth,
+        string? rawResponsePath,
+        string? normalizedResultPath,
+        string? errorMessage)
+    {
         var extractedSupplierName = FieldValue(fields, FieldName.SupplierName);
         var extractedSupplierTaxCode = FieldValue(fields, FieldName.SupplierTaxCode);
         var extractedInvoiceNumber = FieldValue(fields, FieldName.InvoiceNumber);
@@ -113,18 +215,20 @@ internal sealed class BenchmarkFileProcessor(
         return new BenchmarkCsvRow(
             FileName: fileName,
             DocumentCategory: FieldValue(fields, FieldName.DocumentType),
-            ProviderName: provider.ProviderName,
-            ModelId: ocrResult.ModelId,
-            Features: string.Join('|', ocrResult.Features),
-            ProcessingDurationMs: ocrResult.ProcessingTimeMs,
-            PageCount: ocrResult.PageCount,
-            FullTextLength: ocrResult.FullText.Length,
-            LineCount: ocrResult.Lines.Count,
-            WordCount: ocrResult.Words.Count,
-            ParagraphCount: ocrResult.Paragraphs.Count,
-            TableCount: ocrResult.Tables.Count,
-            KeyValuePairCount: ocrResult.KeyValuePairs.Count,
+            ProviderName: providerName,
+            ModelId: modelId,
+            Features: features,
+            ProcessingDurationMs: processingDurationMs,
+            PageCount: pageCount,
+            FullTextLength: fullTextLength,
+            LineCount: lineCount,
+            WordCount: wordCount,
+            ParagraphCount: paragraphCount,
+            TableCount: tableCount,
+            KeyValuePairCount: keyValuePairCount,
             AverageConfidence: AverageFieldConfidence(fields),
+            EstimatedCost: estimatedCost,
+            RejectedFieldCount: rejectedFieldCount,
             ExtractedSupplierName: extractedSupplierName,
             ExpectedSupplierName: groundTruth?.ExpectedSupplierName,
             SupplierNameMatched: supplierNameMatched,
@@ -152,17 +256,32 @@ internal sealed class BenchmarkFileProcessor(
             FieldAccuracyPercent: GroundTruthComparer.CalculateFieldAccuracyPercent(
                 supplierNameMatched, taxCodeMatched, invoiceNumberMatched, invoiceDateMatched,
                 subtotalMatched, vatMatched, totalMatched, currencyMatched),
-            WarningCount: warnings.Count,
+            WarningCount: warningCount,
             RawProviderResponsePath: rawResponsePath,
-            NormalizedOcrResultPath: ocrResultPath,
-            ErrorMessage: ocrResult.Success ? null : ocrResult.ErrorMessage);
+            NormalizedOcrResultPath: normalizedResultPath,
+            ErrorMessage: errorMessage);
     }
+
+    private static BenchmarkCsvRow BuildFailureRow(
+        string fileName, string providerName, GroundTruthRow? groundTruth, string errorMessage) => new(
+        fileName, DocumentCategory: null, providerName, ModelId: null, Features: "",
+        ProcessingDurationMs: 0, PageCount: 0, FullTextLength: 0, LineCount: 0, WordCount: 0,
+        ParagraphCount: 0, TableCount: 0, KeyValuePairCount: 0, AverageConfidence: null,
+        EstimatedCost: 0, RejectedFieldCount: 0,
+        ExtractedSupplierName: null, ExpectedSupplierName: groundTruth?.ExpectedSupplierName, SupplierNameMatched: null,
+        ExtractedSupplierTaxCode: null, ExpectedSupplierTaxCode: groundTruth?.ExpectedSupplierTaxCode, TaxCodeMatched: null,
+        ExtractedInvoiceNumber: null, ExpectedInvoiceNumber: groundTruth?.ExpectedInvoiceNumber, InvoiceNumberMatched: null,
+        ExtractedInvoiceDate: null, ExpectedInvoiceDate: groundTruth?.ExpectedInvoiceDate, InvoiceDateMatched: null,
+        ExtractedSubtotalAmount: null, ExpectedSubtotalAmount: groundTruth?.ExpectedSubtotalAmount, SubtotalMatched: null,
+        ExtractedVatAmount: null, ExpectedVatAmount: groundTruth?.ExpectedVatAmount, VatMatched: null,
+        ExtractedTotalAmount: null, ExpectedTotalAmount: groundTruth?.ExpectedTotalAmount, TotalMatched: null,
+        ExtractedCurrency: null, ExpectedCurrency: groundTruth?.ExpectedCurrency, CurrencyMatched: null,
+        FieldAccuracyPercent: null, WarningCount: 0,
+        RawProviderResponsePath: null, NormalizedOcrResultPath: null, ErrorMessage: errorMessage);
 
     // ── AverageConfidence: mean confidence across the extracted canonical fields (SupplierName,
     // SupplierTaxCode, InvoiceNumber, ... TotalAmount) — this reflects field-extraction quality,
-    // which is what this benchmark compares between providers. NormalizedOcrDocument.AverageConfidence
-    // is not used because AzureDocumentIntelligenceProvider derives it from word confidences, which
-    // isn't directly comparable to FakeOcrProvider's flat document-level value. ──────────────────
+    // which is what this benchmark compares between providers/strategies. ──────────────────
     private static double? AverageFieldConfidence(IReadOnlyList<ExtractedField> fields)
     {
         var confidences = fields.Where(f => f.Confidence.HasValue).Select(f => f.Confidence!.Value).ToList();
@@ -174,6 +293,23 @@ internal sealed class BenchmarkFileProcessor(
         var field = fields.FirstOrDefault(f => f.FieldName == fieldName.ToString());
         if (field is null) return null;
         return !string.IsNullOrWhiteSpace(field.NormalizedValue) ? field.NormalizedValue : field.RawValue;
+    }
+
+    private static async Task WriteFailureArtifactAsync(string outputDir, string fileName, string errorMessage, CancellationToken ct) =>
+        await File.WriteAllTextAsync(
+            Path.Combine(outputDir, fileName),
+            $$"""{ "success": false, "errorMessage": {{JsonSerializer.Serialize(errorMessage)}} }""",
+            ct);
+
+    private static async Task WriteFieldsAndWarningsAsync(
+        string outputDir, IReadOnlyList<ExtractedField> fields, IReadOnlyList<ValidationWarning> warnings, CancellationToken ct)
+    {
+        await File.WriteAllTextAsync(
+            Path.Combine(outputDir, "extracted-fields.json"),
+            JsonSerializer.Serialize(fields, JsonOptions), ct);
+        await File.WriteAllTextAsync(
+            Path.Combine(outputDir, "validation-warnings.json"),
+            JsonSerializer.Serialize(warnings, JsonOptions), ct);
     }
 
     private static async Task<string?> WriteRawResponseAsync(string outputDir, NormalizedOcrDocument ocrResult, CancellationToken ct)

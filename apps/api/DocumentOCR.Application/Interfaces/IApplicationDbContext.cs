@@ -15,6 +15,7 @@ public interface IApplicationDbContext
     DbSet<OcrProviderLog> OcrProviderLogs { get; }
     DbSet<CreditTransaction> CreditTransactions { get; }
     DbSet<InvoiceTaxBreakdown> InvoiceTaxBreakdowns { get; }
+    DbSet<LlmExtractionCache> LlmExtractionCaches { get; }
 
     /// <summary>
     /// Exposed so a caller can recover from a failed <see cref="SaveChangesAsync"/> by discarding

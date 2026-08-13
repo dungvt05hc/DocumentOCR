@@ -18,9 +18,14 @@ public class TT78XmlInvoiceParserTests
         var result = await _sut.ParseAsync(stream);
 
         Assert.True(result.Success, result.ErrorMessage);
-        Assert.All(result.Fields, f => Assert.Equal(1.0, f.Confidence));
         Assert.All(result.Fields, f => Assert.Equal("TT78Xml", f.SourceType));
-        Assert.All(result.Fields, f => Assert.Equal("TT78Xml", f.ExtractionMethod));
+
+        // Both fixtures omit <TCHDon>, so InvoiceNature is the one field that's a guessed default
+        // rather than a read value (see AddInvoiceNatureField) — every other field is read at full
+        // confidence directly from a standard tag.
+        var readFields = result.Fields.Where(f => f.FieldName != nameof(FieldName.InvoiceNature)).ToList();
+        Assert.All(readFields, f => Assert.Equal(1.0, f.Confidence));
+        Assert.All(readFields, f => Assert.Equal("TT78Xml", f.ExtractionMethod));
 
         AssertField(result, FieldName.InvoiceNumber, "00001234");
         AssertField(result, FieldName.InvoiceDate, "2026-07-15");
@@ -36,7 +41,7 @@ public class TT78XmlInvoiceParserTests
 
         Assert.Equal("1", result.InvoiceTemplateCode);
         Assert.Equal("C25TAA", result.InvoiceSerial);
-        Assert.False(string.IsNullOrWhiteSpace(result.RawXml));
+        Assert.False(string.IsNullOrWhiteSpace(result.RawSourceText));
 
         // The seller (NBan) fields must never be confused with the buyer (NMua) fields, even
         // though both carry the same "Ten"/"MST" local names — each must land under its own
@@ -45,6 +50,15 @@ public class TT78XmlInvoiceParserTests
         AssertField(result, FieldName.SupplierTaxCode, "0100109106");
         AssertField(result, FieldName.BuyerName, "CÔNG TY TNHH XYZ");
         AssertField(result, FieldName.BuyerTaxCode, "0109876543");
+
+        // No <TCHDon> in this fixture — InvoiceNature must still be present, defaulted to "gốc",
+        // but visibly marked as inferred (not read): reduced confidence + a distinct extraction
+        // method, rather than silently fabricated at full confidence.
+        var nature = Assert.Single(result.Fields, f => f.FieldName == nameof(FieldName.InvoiceNature));
+        Assert.Equal("Hóa đơn gốc", nature.NormalizedValue);
+        Assert.Null(nature.RawValue);
+        Assert.True(nature.Confidence < 0.75);
+        Assert.Equal("TT78Xml:InferredDefault", nature.ExtractionMethod);
     }
 
     [Fact]
@@ -101,9 +115,19 @@ public class TT78XmlInvoiceParserTests
         AssertField(result, "AmountInWords", "Mười một triệu không trăm hai mươi mốt nghìn chín trăm đồng.");
         AssertField(result, "LookupCode", "1ZFZUQ8W2Z38");
 
-        // No <TCHDon> tag in this real sample — best-effort/unverified field, must stay absent
-        // rather than fabricate a nature.
-        Assert.DoesNotContain(result.Fields, f => f.FieldName == nameof(FieldName.InvoiceNature));
+        // No <TCHDon> tag in this real sample — InvoiceNature still gets an inferred "gốc" default
+        // (see AddInvoiceNatureField), never left absent.
+        var nature = Assert.Single(result.Fields, f => f.FieldName == nameof(FieldName.InvoiceNature));
+        Assert.Equal("Hóa đơn gốc", nature.NormalizedValue);
+        Assert.True(nature.Confidence < 0.75);
+
+        // Every money total in this fixture is present as a standard TT78 tag directly under
+        // <TToan>, even though <TToan><TTKhac> also carries MISA's own duplicate "TotalAmount"/
+        // "TotalAmountWithoutVAT"/"TotalVATAmount" fields — the standard tag must win, and the
+        // extension fallback must never fire when it's present.
+        Assert.Equal("TT78Xml", subtotal.ExtractionMethod);
+        Assert.Equal("TT78Xml", vat.ExtractionMethod);
+        Assert.Equal("TT78Xml", total.ExtractionMethod);
 
         var taxLine = Assert.Single(result.TaxBreakdown);
         Assert.Equal("10%", taxLine.RawVatRate);
@@ -112,6 +136,94 @@ public class TT78XmlInvoiceParserTests
         Assert.Equal(1001991.000000m, taxLine.TaxAmount);
         Assert.Equal(1.0, taxLine.Confidence);
         Assert.Equal(0, taxLine.SortOrder);
+    }
+
+    [Fact]
+    public async Task ParseAsync_RealViettelInvoice_PrefersStandardTagsOverTTKhac()
+    {
+        // Real Viettel-issued invoice (ký hiệu 1C25TBP số 200, MST người bán 0318950973). Every
+        // section (TTChung, NBan, NMua, each HHDVu line, TToan, and DLHDon itself) carries its own
+        // <TTKhac> block full of Viettel-specific extension data (e.g. "Tổng tiền thanh toán bằng
+        // số" duplicating TgTTTBSo) — this asserts the standard TT78 tags are read instead of that
+        // extension data, and confirms the parser isn't tied to MISA's XML conventions.
+        await using var stream = OpenFixture("0318950973-C25TBP200.xml");
+
+        var result = await _sut.ParseAsync(stream);
+
+        Assert.True(result.Success, result.ErrorMessage);
+
+        var subtotal = Assert.Single(result.Fields, f => f.FieldName == nameof(FieldName.SubtotalAmount));
+        var vat = Assert.Single(result.Fields, f => f.FieldName == nameof(FieldName.VatAmount));
+        var total = Assert.Single(result.Fields, f => f.FieldName == nameof(FieldName.TotalAmount));
+
+        Assert.Equal("12574320", subtotal.NormalizedValue);
+        Assert.Equal("TT78Xml", subtotal.ExtractionMethod);
+
+        Assert.Equal("1005945", vat.NormalizedValue);
+        Assert.Equal("TT78Xml", vat.ExtractionMethod);
+
+        Assert.Equal("13580265", total.NormalizedValue);
+        Assert.Equal("TT78Xml", total.ExtractionMethod);
+
+        AssertField(result, FieldName.SupplierTaxCode, "0318950973");
+        AssertField(result, FieldName.BuyerTaxCode, "4500118624");
+        AssertField(result, FieldName.InvoiceSymbol, "C25TBP");
+        AssertField(result, FieldName.InvoiceNumber, "200");
+
+        var taxLine = Assert.Single(result.TaxBreakdown);
+        Assert.Equal("8%", taxLine.VatRate);
+    }
+
+    [Fact]
+    public async Task ParseAsync_StandardTotalTagMissing_FallsBackToTTKhacExtensionAndMarksSource()
+    {
+        // Synthetic XML: <TgTTTBSo> (standard) is absent from <TToan>, but a TTKhac/TTin entry
+        // named "TotalAmount" (the MISA extension synonym) carries the value — the fallback must
+        // pick it up, at full confidence (it's still a real read, just from a different tag), but
+        // tagged distinctly as an Extension-sourced field so it's diagnosable later.
+        const string xml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <HDon>
+              <DLHDon>
+                <TTChung>
+                  <SHDon>00009999</SHDon>
+                  <NLap>2026-07-15</NLap>
+                </TTChung>
+                <NDHDon>
+                  <NBan>
+                    <Ten>CÔNG TY TNHH ABC</Ten>
+                    <MST>0100109106</MST>
+                  </NBan>
+                  <TToan>
+                    <TgTCThue>1000000.000000</TgTCThue>
+                    <TgTThue>100000.000000</TgTThue>
+                    <TTKhac>
+                      <TTin>
+                        <TTruong>TotalAmount</TTruong>
+                        <KDLieu>numeric</KDLieu>
+                        <DLieu>1100000.0</DLieu>
+                      </TTin>
+                    </TTKhac>
+                  </TToan>
+                </NDHDon>
+              </DLHDon>
+            </HDon>
+            """;
+        await using var stream = ToStream(xml);
+
+        var result = await _sut.ParseAsync(stream);
+
+        Assert.True(result.Success, result.ErrorMessage);
+
+        var subtotal = Assert.Single(result.Fields, f => f.FieldName == nameof(FieldName.SubtotalAmount));
+        Assert.Equal("TT78Xml", subtotal.ExtractionMethod);
+
+        var total = Assert.Single(result.Fields, f => f.FieldName == nameof(FieldName.TotalAmount));
+        Assert.Equal("1100000.0", total.RawValue);
+        Assert.Equal("1100000", total.NormalizedValue);
+        Assert.Equal(1.0, total.Confidence);
+        Assert.Equal("TT78Xml:Extension", total.ExtractionMethod);
+        Assert.Equal("TotalAmount", total.ProviderFieldName);
     }
 
     [Fact]
@@ -304,11 +416,11 @@ public class TT78XmlInvoiceParserTests
     }
 
     private static void AssertField(
-        Application.Models.StructuredInvoiceResult result, FieldName fieldName, string expectedRawValue) =>
+        Application.Models.StructuredExtractionResult result, FieldName fieldName, string expectedRawValue) =>
         AssertField(result, fieldName.ToString(), expectedRawValue);
 
     private static void AssertField(
-        Application.Models.StructuredInvoiceResult result, string fieldName, string expectedRawValue)
+        Application.Models.StructuredExtractionResult result, string fieldName, string expectedRawValue)
     {
         var field = Assert.Single(result.Fields, f => f.FieldName == fieldName);
         Assert.Equal(expectedRawValue, field.RawValue);

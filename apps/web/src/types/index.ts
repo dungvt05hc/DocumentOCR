@@ -207,6 +207,8 @@ export type ReviewFieldDataType =
 
 export interface ReviewField {
   fieldKey: string;
+  /** Underlying storage field name to save edits against; null when the field is missing (nothing matched yet). */
+  storageFieldName: string | null;
   label: string;
   value: string | null;
   rawValue: string | null;

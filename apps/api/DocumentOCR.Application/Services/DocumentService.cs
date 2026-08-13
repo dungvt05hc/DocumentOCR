@@ -442,10 +442,20 @@ public class DocumentService
                 _db.ExtractedFields.Add(field);
             }
 
+            // Only flag as user-edited when the submitted value actually differs from what's
+            // currently stored (trimmed compare) — the review UI resubmits every field on every
+            // save, not just the ones the user touched, so an unconditional "always edited" here
+            // would mislabel untouched fields and, on repeat saves, would never let the flag
+            // reflect reality. Confidence/RawValue (the machine-read audit trail) are never
+            // touched here, so they survive edits unchanged.
+            if (!ValuesEqual(field.NormalizedValue ?? field.RawValue, update.NormalizedValue))
+            {
+                field.IsEditedByUser = true;
+                field.EditedAt = DateTime.UtcNow;
+            }
+
             field.NormalizedValue = update.NormalizedValue;
             field.RawValue = update.RawValue ?? field.RawValue;
-            field.IsEditedByUser = true;
-            field.EditedAt = DateTime.UtcNow;
             field.UpdatedAt = DateTime.UtcNow;
         }
 
@@ -474,6 +484,14 @@ public class DocumentService
         doc.UpdatedAt = DateTime.UtcNow;
 
         await _db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>Trim-and-blank-insensitive equality — "so sánh sau khi trim và chuẩn hoá" for the IsEditedByUser check above.</summary>
+    private static bool ValuesEqual(string? a, string? b)
+    {
+        var normalizedA = string.IsNullOrWhiteSpace(a) ? null : a.Trim();
+        var normalizedB = string.IsNullOrWhiteSpace(b) ? null : b.Trim();
+        return string.Equals(normalizedA, normalizedB, StringComparison.Ordinal);
     }
 
     public async Task<(Stream Stream, string ContentType, string FileName)> DownloadOriginalAsync(

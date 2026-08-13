@@ -6,6 +6,7 @@ using DocumentOCR.Application.Services;
 using DocumentOCR.Infrastructure.Credits;
 using DocumentOCR.Infrastructure.Export;
 using DocumentOCR.Infrastructure.Jobs;
+using DocumentOCR.Infrastructure.Llm;
 using DocumentOCR.Infrastructure.Ocr;
 using DocumentOCR.Infrastructure.Persistence;
 using DocumentOCR.Infrastructure.Processing;
@@ -15,6 +16,7 @@ using Hangfire.PostgreSql;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace DocumentOCR.Infrastructure;
@@ -71,6 +73,20 @@ public static class DependencyInjection
 
         OcrProviderRegistry.Register(services, configuration);
 
+        // ── LLM extraction (PDF text-layer + LLM strategy) ──────────────────────
+        // Same fail-fast treatment as Azure/Paddle above, gated on Llm:Enabled instead of a
+        // provider-selection string since this is an additive strategy, not a swappable slot.
+        services.AddOptions<LlmOptions>()
+            .Bind(configuration.GetSection(LlmOptions.SectionName))
+            .Validate(
+                o => !o.Enabled || o.IsConfigured,
+                "Llm:Model and Llm:ApiKey must be set (via dotnet user-secrets or Llm__ApiKey " +
+                "environment variable) when Llm:Enabled is true.")
+            .ValidateOnStart();
+
+        services.AddSingleton<ILlmExtractionClient, GeminiExtractionClient>();
+        services.AddScoped<ILlmExtractionCache, LlmExtractionCacheService>();
+
         // ── Document review profiles ────────────────────────────────────────────
         // Pure static data, no per-request state — safe (and cheap) as a singleton.
         services.AddSingleton<IDocumentProfileCatalog, DocumentProfileCatalog>();
@@ -87,6 +103,28 @@ public static class DependencyInjection
 
         // Pure function over the uploaded stream, no per-request state — safe as a singleton.
         services.AddSingleton<IStructuredInvoiceParser, TT78XmlInvoiceParser>();
+
+        // Extraction strategies DocumentProcessingService tries in Priority order (see
+        // IDocumentExtractionStrategy remarks): structured XML fast path, then PDF text-layer+LLM,
+        // then the OCR pipeline (IDocumentOcrProvider, still resolved as
+        // PdfProviderRouter/Fake/Azure/Paddle above). Registered Scoped to match
+        // DocumentProcessingService's own lifetime.
+        services.AddScoped<IDocumentExtractionStrategy, XmlInvoiceStrategy>();
+
+        // Explicit factory (not a plain AddScoped<IDocumentExtractionStrategy, PdfTextLayerLlmStrategy>())
+        // because this strategy needs the concrete PdfTextLayerProvider singleton specifically —
+        // resolving IDocumentOcrProvider here would give it PdfProviderRouter (the general DI slot
+        // OcrStrategy uses), which would silently fall back to paid OCR internally instead of
+        // reporting "not a text-layer PDF" back to DocumentProcessingService's own strategy loop.
+        services.AddScoped<IDocumentExtractionStrategy>(sp => new PdfTextLayerLlmStrategy(
+            sp.GetRequiredService<PdfTextLayerProvider>(),
+            sp.GetRequiredService<ILlmExtractionClient>(),
+            sp.GetRequiredService<IFieldNormalizationService>(),
+            sp.GetRequiredService<ILlmExtractionCache>(),
+            sp.GetRequiredService<IOptions<LlmOptions>>(),
+            sp.GetRequiredService<ILogger<PdfTextLayerLlmStrategy>>()));
+
+        services.AddScoped<IDocumentExtractionStrategy, OcrStrategy>();
 
         // Pure functions over already-loaded data, no per-request state — safe as a singleton.
         services.AddSingleton<IReviewTableBuilder, ReviewTableBuilder>();

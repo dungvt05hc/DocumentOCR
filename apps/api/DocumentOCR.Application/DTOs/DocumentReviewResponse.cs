@@ -58,6 +58,17 @@ public class ReviewSection
 public class ReviewField
 {
     public string FieldKey { get; set; } = string.Empty;
+
+    /// <summary>
+    /// The underlying <see cref="Domain.Entities.ExtractedField.FieldName"/> this value actually
+    /// lives under — differs from <see cref="FieldKey"/> when the profile field resolved through
+    /// an alias (e.g. FieldKey "SellerName" backed by storage field "SupplierName"). Null when the
+    /// field is missing (nothing matched yet, so there is nothing to target). The client must save
+    /// edits against this name, not <see cref="FieldKey"/>, or it will create a shadow duplicate
+    /// field instead of updating the original.
+    /// </summary>
+    public string? StorageFieldName { get; set; }
+
     public string Label { get; set; } = string.Empty;
 
     /// <summary>Convenience projection: <see cref="NormalizedValue"/> if present, else <see cref="RawValue"/>.</summary>

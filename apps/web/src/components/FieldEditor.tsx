@@ -21,6 +21,10 @@ import { ReviewDebugPanel } from './review/ReviewDebugPanel';
 import { TaxBreakdownTable } from './review/TaxBreakdownTable';
 import type { TaxBreakdownRowState } from './review/TaxBreakdownTable';
 import { parseTableCellEditKey, tableCellEditKey } from './review/tableEditKey';
+import { XmlPreview } from './XmlPreview';
+
+const isXmlContent = (contentType: string, fileName: string) =>
+  /xml/i.test(contentType) || fileName.toLowerCase().endsWith('.xml');
 
 let taxBreakdownRowSeq = 0;
 const nextTaxBreakdownRowKey = () => `new-${++taxBreakdownRowSeq}`;
@@ -54,6 +58,7 @@ export function FieldEditor({ document: doc, onSaved, onBack }: Props) {
 
   const [values, setValues] = useState<Record<string, string>>(initialValues);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [xmlText, setXmlText] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showDebug, setShowDebug] = useState(false);
@@ -83,8 +88,14 @@ export function FieldEditor({ document: doc, onSaved, onBack }: Props) {
     downloadOriginal(doc.documentId)
       .then((response) => {
         if (cancelled) return;
-        objectUrl = URL.createObjectURL(new Blob([response.data], { type: doc.contentType }));
+        const blob = new Blob([response.data], { type: doc.contentType });
+        objectUrl = URL.createObjectURL(blob);
         setPreviewUrl(objectUrl);
+        if (isXmlContent(doc.contentType, doc.fileName)) {
+          blob.text().then((text) => {
+            if (!cancelled) setXmlText(text);
+          });
+        }
       })
       .catch(() => setPreviewUrl(null));
 
@@ -92,7 +103,7 @@ export function FieldEditor({ document: doc, onSaved, onBack }: Props) {
       cancelled = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [doc.documentId, doc.contentType]);
+  }, [doc.documentId, doc.contentType, doc.fileName]);
 
   const warningsByFieldKey = useMemo(() => {
     const map = new Map<string, ReviewWarningDto[]>();
@@ -210,7 +221,7 @@ export function FieldEditor({ document: doc, onSaved, onBack }: Props) {
 
     try {
       const updates: FieldUpdateItem[] = allFields.map((field) => ({
-        fieldName: field.fieldKey,
+        fieldName: field.storageFieldName ?? field.fieldKey,
         normalizedValue: values[field.fieldKey] || null,
       }));
 
@@ -280,8 +291,17 @@ export function FieldEditor({ document: doc, onSaved, onBack }: Props) {
       </div>
 
       <div className="review-layout">
-        <section className="preview-pane" aria-label="Original document preview">
-          {previewUrl ? (
+        <section
+          className={`preview-pane${isXmlContent(doc.contentType, doc.fileName) ? ' is-xml' : ''}`}
+          aria-label="Original document preview"
+        >
+          {isXmlContent(doc.contentType, doc.fileName) ? (
+            xmlText !== null ? (
+              <XmlPreview xml={xmlText} fileName={doc.fileName} downloadHref={previewUrl} />
+            ) : (
+              <div className="preview-empty">Loading XML...</div>
+            )
+          ) : previewUrl ? (
             doc.contentType === 'application/pdf' ? (
               <iframe title="Original document preview" src={previewUrl} />
             ) : (

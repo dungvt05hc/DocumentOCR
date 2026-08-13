@@ -4,7 +4,7 @@ namespace DocumentOCR.UnitTests.Credits;
 
 public class CreditPricingTests
 {
-    private static readonly CreditOptions Options = new() { XmlParse = 0, PdfTextLayer = 0, OcrExtraction = 2 };
+    private static readonly CreditOptions Options = new() { XmlParse = 0, PdfTextLayer = 0, PdfTextLayerLlm = 3, OcrExtraction = 2 };
 
     [Theory]
     [InlineData("text/xml")]
@@ -36,6 +36,12 @@ public class CreditPricingTests
     public void ResolveActualCost_PdfTextLayerProvider_ReturnsPdfTextLayerPrice()
     {
         Assert.Equal(0, CreditPricing.ResolveActualCost(CreditPricing.PdfTextLayerProviderName, Options));
+    }
+
+    [Fact]
+    public void ResolveActualCost_PdfTextLayerLlmProvider_ReturnsPdfTextLayerLlmPrice()
+    {
+        Assert.Equal(3, CreditPricing.ResolveActualCost(CreditPricing.PdfTextLayerLlmProviderName, Options));
     }
 
     [Theory]

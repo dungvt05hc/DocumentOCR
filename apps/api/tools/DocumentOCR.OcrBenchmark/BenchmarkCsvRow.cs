@@ -16,6 +16,8 @@ public sealed record BenchmarkCsvRow(
     int TableCount,
     int KeyValuePairCount,
     double? AverageConfidence,
+    decimal EstimatedCost,
+    int RejectedFieldCount,
     string? ExtractedSupplierName,
     string? ExpectedSupplierName,
     bool? SupplierNameMatched,

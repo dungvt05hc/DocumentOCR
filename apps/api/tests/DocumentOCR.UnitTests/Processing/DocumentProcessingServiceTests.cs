@@ -5,6 +5,7 @@ using DocumentOCR.Application.Processing;
 using DocumentOCR.Application.Profiles;
 using DocumentOCR.Domain.Entities;
 using DocumentOCR.Domain.Enums;
+using DocumentOCR.Infrastructure.Llm;
 using DocumentOCR.Infrastructure.Ocr;
 using DocumentOCR.Infrastructure.Persistence;
 using DocumentOCR.Infrastructure.Processing;
@@ -136,19 +137,30 @@ public class DocumentProcessingServiceTests
         OcrOptions? ocrOptions = null,
         IStructuredInvoiceParser? structuredInvoiceParser = null,
         ICreditService? creditService = null,
-        CreditOptions? creditOptions = null) =>
-        new(
+        CreditOptions? creditOptions = null)
+    {
+        var options = Options.Create(ocrOptions ?? new OcrOptions());
+        var normalization = new FieldNormalizationService();
+
+        IDocumentExtractionStrategy[] strategies =
+        [
+            new XmlInvoiceStrategy(
+                structuredInvoiceParser ?? new NeverMatchingStructuredInvoiceParser(), storage, options),
+            new OcrStrategy(
+                ocrProvider, new FieldExtractionService(), normalization, storage, options,
+                NullLogger<OcrStrategy>.Instance)
+        ];
+
+        return new DocumentProcessingService(
             db,
             storage,
-            ocrProvider,
-            new FieldExtractionService(),
-            new FieldNormalizationService(),
+            strategies,
+            normalization,
             new FieldValidationService(new DocumentProfileCatalog()),
-            structuredInvoiceParser ?? new NeverMatchingStructuredInvoiceParser(),
             creditService ?? new RecordingCreditService(),
-            Options.Create(ocrOptions ?? new OcrOptions()),
             Options.Create(creditOptions ?? new CreditOptions()),
             NullLogger<DocumentProcessingService>.Instance);
+    }
 
     private static ApplicationDbContext CreateDbContext()
     {
@@ -449,7 +461,7 @@ public class DocumentProcessingServiceTests
     {
         public bool CanParse(string contentType, string fileName) => false;
 
-        public Task<StructuredInvoiceResult> ParseAsync(Stream content, CancellationToken ct = default) =>
+        public Task<StructuredExtractionResult> ParseAsync(Stream content, CancellationToken ct = default) =>
             throw new NotSupportedException("Should never be called when CanParse returns false.");
     }
 
@@ -501,6 +513,78 @@ public class DocumentProcessingServiceTests
         await sut.ProcessAsync(document.Id);
 
         Assert.Empty(creditService.Refunds);
+    }
+
+    // ── Three-strategy fallback: LLM failure falls through to OCR ──────────────────
+
+    [Fact]
+    public async Task ProcessAsync_PdfTextLayerLlmFails_FallsThroughToOcrStrategyAndSucceeds()
+    {
+        await using var db = CreateDbContext();
+        var document = await SeedDocumentAsync(db, DocumentStatus.Uploaded, doc => doc.ContentType = "application/pdf");
+
+        var storage = new FakeDocumentStorageService();
+        var options = Options.Create(new OcrOptions());
+        var normalization = new FieldNormalizationService();
+
+        var pdfTextLayerProvider = new StubOcrProvider(new NormalizedOcrDocument
+        {
+            Success = true,
+            ProviderName = "PdfTextLayer",
+            FullText = new string('x', 200),
+            PageCount = 1
+        });
+        var llmStrategy = new PdfTextLayerLlmStrategy(
+            pdfTextLayerProvider,
+            new ThrowingLlmExtractionClient(),
+            normalization,
+            new NoOpLlmExtractionCache(),
+            Options.Create(new LlmOptions { Enabled = true, Model = "gemini-2.5-flash" }),
+            NullLogger<PdfTextLayerLlmStrategy>.Instance);
+
+        IDocumentExtractionStrategy[] strategies =
+        [
+            new XmlInvoiceStrategy(new NeverMatchingStructuredInvoiceParser(), storage, options),
+            llmStrategy,
+            new OcrStrategy(new FakeOcrProvider(), new FieldExtractionService(), normalization, storage, options, NullLogger<OcrStrategy>.Instance)
+        ];
+
+        var sut = new DocumentProcessingService(
+            db, storage, strategies, normalization, new FieldValidationService(new DocumentProfileCatalog()),
+            new RecordingCreditService(), Options.Create(new CreditOptions()), NullLogger<DocumentProcessingService>.Instance);
+
+        await sut.ProcessAsync(document.Id);
+
+        var reloaded = await db.Documents
+            .Include(d => d.Fields)
+            .Include(d => d.OcrProviderLogs)
+            .SingleAsync(d => d.Id == document.Id);
+
+        Assert.Equal(DocumentStatus.Processed, reloaded.Status);
+
+        // Both attempts are recorded on the audit trail: the failed LLM attempt and the OCR
+        // attempt that actually served the document -- not just the winner.
+        Assert.Equal(2, reloaded.OcrProviderLogs.Count);
+        Assert.Contains(reloaded.OcrProviderLogs, l => l.ProviderName == "PdfTextLayerLlm" && !l.Success);
+        Assert.Contains(reloaded.OcrProviderLogs, l => l.ProviderName == "Fake" && l.Success);
+
+        // The fields that end up persisted come from FakeOcrProvider, not a half-populated LLM result.
+        Assert.Contains(reloaded.Fields, f => f.FieldName == nameof(FieldName.SupplierTaxCode) && f.NormalizedValue == "0100109106");
+    }
+
+    private sealed class ThrowingLlmExtractionClient : ILlmExtractionClient
+    {
+        public Task<LlmExtractionResult> ExtractAsync(string documentText, CancellationToken ct = default) =>
+            throw new InvalidOperationException("Simulated LLM provider failure.");
+    }
+
+    private sealed class NoOpLlmExtractionCache : ILlmExtractionCache
+    {
+        public Task<string?> TryGetResponseJsonAsync(string textHash, string model, CancellationToken ct = default) =>
+            Task.FromResult<string?>(null);
+
+        public Task SetAsync(string textHash, string model, string responseJson, CancellationToken ct = default) =>
+            Task.CompletedTask;
     }
 
     private sealed class RecordingCreditService : ICreditService

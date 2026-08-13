@@ -1,7 +1,10 @@
 using DocumentOCR.Application.Interfaces;
+using DocumentOCR.Application.Models;
 using DocumentOCR.Application.Processing;
 using DocumentOCR.Application.Profiles;
+using DocumentOCR.Infrastructure.Llm;
 using DocumentOCR.Infrastructure.Ocr;
+using DocumentOCR.Infrastructure.Processing;
 using DocumentOCR.OcrBenchmark;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -75,6 +78,19 @@ targets.Add((paddleProvider, "Paddle"));
 var pdfTextLayerProvider = new PdfTextLayerProvider(
     Options.Create(new PdfTextLayerOptions()), loggerFactory.CreateLogger<PdfTextLayerProvider>());
 
+// Only used by the XML/PDF-pair comparison pass at the end of this file (see PdfXmlPairCsvReader) —
+// never added to the main per-file loop below, so a plain (unpaired) benchmark run never spends
+// LLM money unless the user explicitly supplies pairs.csv.
+var llmOptions = configuration.GetSection(LlmOptions.SectionName).Get<LlmOptions>() ?? new LlmOptions();
+var sharedNormalization = new FieldNormalizationService();
+var llmStrategy = new PdfTextLayerLlmStrategy(
+    pdfTextLayerProvider,
+    new GeminiExtractionClient(Options.Create(llmOptions), loggerFactory.CreateLogger<GeminiExtractionClient>()),
+    sharedNormalization,
+    new NoOpLlmExtractionCache(),
+    Options.Create(llmOptions),
+    loggerFactory.CreateLogger<PdfTextLayerLlmStrategy>());
+
 if (!azureOptions.IsConfigured)
 {
     Console.WriteLine(
@@ -109,7 +125,7 @@ if (files.Count == 0)
 
 var processor = new BenchmarkFileProcessor(
     new FieldExtractionService(),
-    new FieldNormalizationService(),
+    sharedNormalization,
     new FieldValidationService(new DocumentProfileCatalog()));
 
 // Ground truth is optional: comparison columns are populated when present, left blank otherwise.
@@ -180,6 +196,83 @@ Console.WriteLine($"Done. {files.Count} file(s), {rows.Count} row(s) total.");
 Console.WriteLine($"Output: {runDir}");
 Console.WriteLine($"Summary CSV: {csvPath}");
 
+// ── XML/PDF pair comparison: XML parsed with full confidence stands in as ground truth, so
+// PdfTextLayerLlmStrategy (and the same Azure/Fake/Paddle targets above) can be scored against a
+// verified-correct baseline instead of a hand-typed CSV. See PdfXmlPairCsvReader/XmlGroundTruthBuilder. ─
+var pairsPath = options.PairsPath ?? Path.Combine(options.InputDir, "pairs.csv");
+var pairs = await PdfXmlPairCsvReader.LoadAsync(pairsPath, CancellationToken.None);
+
+if (pairs.Count == 0)
+{
+    Console.WriteLine();
+    Console.WriteLine(
+        $"No XML/PDF pairs found at {pairsPath} -- skipping the pair comparison pass. " +
+        "Pass --pairs <file> or add a pairs.csv (columns: XmlFile,PdfFile) inside --input to enable it.");
+    return 0;
+}
+
+if (!llmOptions.IsConfigured)
+{
+    Console.WriteLine();
+    Console.WriteLine(
+        "Note: Llm:Model/Llm:ApiKey are not configured (user-secrets or Llm__Model / __ApiKey env " +
+        "vars) -- PdfTextLayerLlm rows in pairs-summary.csv will record a failure. See LOCAL_DEVELOPMENT.md.");
+}
+
+Console.WriteLine();
+Console.WriteLine($"Loaded {pairs.Count} XML/PDF pair(s) from {pairsPath}");
+
+var xmlParser = new TT78XmlInvoiceParser();
+var pairRows = new List<BenchmarkCsvRow>();
+
+foreach (var pair in pairs)
+{
+    var xmlPath = Path.Combine(options.InputDir, pair.XmlFile);
+    var pdfPath = Path.Combine(options.InputDir, pair.PdfFile);
+
+    if (!File.Exists(xmlPath) || !File.Exists(pdfPath))
+    {
+        Console.Error.WriteLine($"Skipping pair ({pair.XmlFile}, {pair.PdfFile}): one or both files not found under {options.InputDir}");
+        continue;
+    }
+
+    StructuredExtractionResult xmlResult;
+    await using (var xmlStream = File.OpenRead(xmlPath))
+    {
+        xmlResult = await xmlParser.ParseAsync(xmlStream, CancellationToken.None);
+    }
+
+    if (!xmlResult.Success)
+    {
+        Console.Error.WriteLine($"Skipping pair ({pair.XmlFile}, {pair.PdfFile}): XML did not parse ({xmlResult.ErrorMessage})");
+        continue;
+    }
+
+    var groundTruthRow = XmlGroundTruthBuilder.FromParsedXmlFields(pair.PdfFile, xmlResult.Fields);
+    var pdfBytes = await File.ReadAllBytesAsync(pdfPath);
+    var documentId = DeterministicDocumentId.ForFileName(pair.PdfFile);
+
+    Console.WriteLine($"Processing pair {pair.PdfFile} (ground truth: {pair.XmlFile}) with PdfTextLayerLlm...");
+    var llmOutputDir = Path.Combine(runDir, "pairs", pair.PdfFile, "PdfTextLayerLlm");
+    pairRows.Add(await processor.ProcessStrategyAsync(
+        llmStrategy, documentId, pdfBytes, pair.PdfFile, "application/pdf", llmOutputDir, CancellationToken.None, groundTruthRow));
+
+    foreach (var (provider, label) in targets)
+    {
+        Console.WriteLine($"Processing pair {pair.PdfFile} (ground truth: {pair.XmlFile}) with {label}...");
+        var outputDir = Path.Combine(runDir, "pairs", pair.PdfFile, label);
+        pairRows.Add(await processor.ProcessAsync(
+            provider, documentId, pdfBytes, pair.PdfFile, "application/pdf", outputDir, CancellationToken.None, groundTruthRow));
+    }
+}
+
+var pairsCsvPath = Path.Combine(runDir, "pairs-summary.csv");
+await CsvSummaryWriter.WriteAsync(pairsCsvPath, pairRows, CancellationToken.None);
+
+Console.WriteLine();
+Console.WriteLine($"Done. {pairs.Count} pair(s), {pairRows.Count} row(s) total.");
+Console.WriteLine($"Pairs summary CSV: {pairsCsvPath}");
+
 return 0;
 
 /// <summary>Parsed and validated CLI arguments for this tool.</summary>
@@ -200,6 +293,12 @@ internal sealed class CliOptions
     /// </summary>
     public string? GroundTruthPath { get; init; }
 
+    /// <summary>
+    /// Path to the XML/PDF pairs CSV, from --pairs. Null means "look for pairs.csv directly
+    /// inside --input" (see Program.cs). Missing/empty is fine — that comparison pass is skipped.
+    /// </summary>
+    public string? PairsPath { get; init; }
+
     // Anchored to this source file's own directory (not the invoking shell's working
     // directory) so the default --input/--output always resolve under this tool's project
     // folder, matching the scoped .gitignore entries, regardless of where `dotnet run` is
@@ -213,6 +312,7 @@ internal sealed class CliOptions
         string? output = null;
         string? models = null;
         string? groundTruth = null;
+        string? pairs = null;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -230,6 +330,9 @@ internal sealed class CliOptions
                 case "--ground-truth" or "-g" when i + 1 < args.Length:
                     groundTruth = args[++i];
                     break;
+                case "--pairs" or "-p" when i + 1 < args.Length:
+                    pairs = args[++i];
+                    break;
                 case "--help" or "-h":
                     PrintUsage();
                     return null;
@@ -245,22 +348,29 @@ internal sealed class CliOptions
             InputDir = Path.GetFullPath(input ?? Path.Combine(ToolDir(), "data")),
             OutputDir = Path.GetFullPath(output ?? Path.Combine(ToolDir(), "benchmark-output")),
             Models = models?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
-            GroundTruthPath = groundTruth is null ? null : Path.GetFullPath(groundTruth)
+            GroundTruthPath = groundTruth is null ? null : Path.GetFullPath(groundTruth),
+            PairsPath = pairs is null ? null : Path.GetFullPath(pairs)
         };
     }
 
     private static void PrintUsage()
     {
         Console.WriteLine("""
-            Usage: dotnet run --project apps/api/tools/DocumentOCR.OcrBenchmark -- [--input <folder>] [--output <folder>] [--models <ids>] [--ground-truth <file>]
+            Usage: dotnet run --project apps/api/tools/DocumentOCR.OcrBenchmark -- [--input <folder>] [--output <folder>] [--models <ids>] [--ground-truth <file>] [--pairs <file>]
 
-              --input, -i         Folder containing sample .pdf/.jpg/.jpeg/.png documents.
+              --input, -i         Folder containing sample .pdf/.jpg/.jpeg/.png/.xml documents.
                                   Default: apps/api/tools/DocumentOCR.OcrBenchmark/data
               --output, -o        Folder to write benchmark results into.
                                   Default: apps/api/tools/DocumentOCR.OcrBenchmark/benchmark-output
               --ground-truth, -g  Path to a ground-truth CSV (FileName + Expected* columns) to compare
                                   extracted fields against. Default: ground-truth.csv inside --input;
                                   comparison columns are left blank when no ground truth is found.
+              --pairs, -p         Path to a pairs CSV (XmlFile,PdfFile columns) naming same-invoice
+                                  TT78 XML/PDF pairs. Default: pairs.csv inside --input. When present,
+                                  runs an extra pass per pair: parses the XML (full confidence) as
+                                  ground truth, then compares PdfTextLayerLlm against it and against
+                                  every Azure/Fake/Paddle target above, writing pairs-summary.csv.
+                                  Skipped entirely (no error) when no pairs file is found.
               --models, -m        Comma-separated Azure model IDs to run, e.g. "prebuilt-invoice,prebuilt-layout".
                                   Default: AzureDocumentIntelligence:BenchmarkModelIds from config, or just
                                   DefaultModelId if that list is empty.
@@ -268,7 +378,9 @@ internal sealed class CliOptions
             Both folder defaults are anchored to this tool's own project folder (not the current
             working directory), matching the .gitignore entries that keep sample data and
             benchmark output out of source control. FakeOcrProvider always runs once per file
-            regardless of --models.
+            regardless of --models. The --pairs pass calls a real LLM (Llm:Model/Llm:ApiKey via
+            user-secrets or env vars) unless left unconfigured, in which case its rows record a
+            failure — see LOCAL_DEVELOPMENT.md.
             """);
     }
 }

@@ -19,6 +19,14 @@ public sealed class CreditOptions
     /// <summary>Credits charged when a PDF's own embedded text layer is read directly (no OCR call).</summary>
     public int PdfTextLayer { get; set; } = 2;
 
+    /// <summary>
+    /// Credits charged when a PDF is processed via the text-layer + LLM path
+    /// (<c>PdfTextLayerLlmStrategy</c>). Unlike <see cref="PdfTextLayer"/>, this path calls a paid
+    /// LLM API, so it isn't free the way plain text-layer reading is — defaults to the same price
+    /// as <see cref="OcrExtraction"/>.
+    /// </summary>
+    public int PdfTextLayerLlm { get; set; } = 2;
+
     /// <summary>Credits charged for the OCR pipeline (PDF/JPG/PNG, when text-layer reading doesn't apply).</summary>
     public int OcrExtraction { get; set; } = 2;
 

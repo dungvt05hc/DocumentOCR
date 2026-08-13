@@ -2,10 +2,13 @@ using System.Globalization;
 using System.Text;
 using System.Xml;
 using System.Xml.Linq;
+using DocumentOCR.Application.Credits;
 using DocumentOCR.Application.Interfaces;
 using DocumentOCR.Application.Models;
 using DocumentOCR.Domain.Entities;
 using DocumentOCR.Domain.Enums;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace DocumentOCR.Application.Processing;
 
@@ -19,9 +22,31 @@ public class TT78XmlInvoiceParser : IStructuredInvoiceParser
 {
     private const string ProviderFieldSource = "TT78Xml";
 
+    /// <summary>Suffix appended to <see cref="ExtractedField.ExtractionMethod"/> when a value had to fall back to a "TTKhac" (provider extension) tag instead of the TT78 standard tag — see <see cref="ResolveMoneyValue"/>.</summary>
+    private const string ExtensionFallbackSuffix = ":Extension";
+
+    /// <summary><see cref="ExtractedField.ExtractionMethod"/> used for <see cref="FieldName.InvoiceNature"/> when no "TCHDon" tag is present and the value is a guessed default, not a read one.</summary>
+    private const string InferredDefaultMethod = ProviderFieldSource + ":InferredDefault";
+
     // VAT-rate canonicalization is pure/stateless — instantiated directly rather than injected,
     // since this parser is registered as a DI singleton and IFieldNormalizationService is scoped.
     private static readonly FieldNormalizationService NormalizationHelper = new();
+
+    // Extension ("TTKhac") field-name synonyms observed on real MISA-issued invoices only used
+    // when the corresponding TT78 standard tag is absent from <TToan> — see docs/decisions.md.
+    // No synonym list exists for other fields (supplier/buyer/invoice-number/...): every real
+    // sample seen so far always carries those as standard tags, so guessing TTKhac names for them
+    // would be speculative rather than evidence-based.
+    private static readonly string[] SubtotalExtensionNames = ["TotalAmountWithoutVAT", "TotalSaleAmount"];
+    private static readonly string[] VatExtensionNames = ["TotalVATAmount"];
+    private static readonly string[] TotalExtensionNames = ["TotalAmount"];
+
+    private readonly ILogger<TT78XmlInvoiceParser> _logger;
+
+    public TT78XmlInvoiceParser(ILogger<TT78XmlInvoiceParser>? logger = null)
+    {
+        _logger = logger ?? NullLogger<TT78XmlInvoiceParser>.Instance;
+    }
 
     public bool CanParse(string contentType, string fileName)
     {
@@ -31,7 +56,7 @@ public class TT78XmlInvoiceParser : IStructuredInvoiceParser
         return isXmlExtension || isXmlContentType;
     }
 
-    public async Task<StructuredInvoiceResult> ParseAsync(Stream content, CancellationToken ct = default)
+    public async Task<StructuredExtractionResult> ParseAsync(Stream content, CancellationToken ct = default)
     {
         using var buffer = new MemoryStream();
         await content.CopyToAsync(buffer, ct);
@@ -47,11 +72,13 @@ public class TT78XmlInvoiceParser : IStructuredInvoiceParser
         }
         catch (XmlException ex)
         {
-            return new StructuredInvoiceResult
+            return new StructuredExtractionResult
             {
                 Success = false,
                 ErrorMessage = $"File is not well-formed XML: {ex.Message}",
-                RawXml = rawXml
+                RawSourceText = rawXml,
+                ProviderName = CreditPricing.StructuredXmlProviderName,
+                PageCount = 1
             };
         }
 
@@ -64,11 +91,13 @@ public class TT78XmlInvoiceParser : IStructuredInvoiceParser
 
         if (dataRoot is null)
         {
-            return new StructuredInvoiceResult
+            return new StructuredExtractionResult
             {
                 Success = false,
                 ErrorMessage = "Could not find invoice data (DLHDon) in the XML file.",
-                RawXml = rawXml
+                RawSourceText = rawXml,
+                ProviderName = CreditPricing.StructuredXmlProviderName,
+                PageCount = 1
             };
         }
 
@@ -89,8 +118,8 @@ public class TT78XmlInvoiceParser : IStructuredInvoiceParser
         var serial = GetChildValue(generalInfo, "KHHDon");
         var invoiceDate = GetChildValue(generalInfo, "NLap");
         var currency = GetChildValue(generalInfo, "DVTTe");
-        // Best-effort — "TCHDon" (tính chất hoá đơn) is not confirmed against a real sample that
-        // carries it (see docs/decisions.md); absent in the fixture used to verify this parser.
+        // "TCHDon" (tính chất hoá đơn) — when absent, InvoiceNature is added further below as an
+        // inferred "hoá đơn gốc" default rather than left unread; see NormalizeInvoiceNature.
         var invoiceNatureCode = GetChildValue(generalInfo, "TCHDon");
 
         var supplierTaxCode = GetChildValue(seller, "MST");
@@ -101,9 +130,12 @@ public class TT78XmlInvoiceParser : IStructuredInvoiceParser
         var buyerName = GetChildValue(buyer, "Ten");
         var buyerAddress = GetChildValue(buyer, "DChi");
 
-        var subtotal = GetChildValue(totals, "TgTCThue");
-        var vat = GetChildValue(totals, "TgTThue");
-        var total = GetChildValue(totals, "TgTTTBSo");
+        // TT78 standard tags (direct children of <TToan>) are always tried first; only when a
+        // standard tag is absent do we fall back to the provider-specific "TTKhac" extension
+        // block — see docs/decisions.md and ResolveMoneyValue.
+        var subtotalResult = ResolveMoneyValue(totals, "TgTCThue", SubtotalExtensionNames, nameof(FieldName.SubtotalAmount));
+        var vatResult = ResolveMoneyValue(totals, "TgTThue", VatExtensionNames, nameof(FieldName.VatAmount));
+        var totalResult = ResolveMoneyValue(totals, "TgTTTBSo", TotalExtensionNames, nameof(FieldName.TotalAmount));
         var paymentMethod = GetChildValue(generalInfo, "HTTToan");
         var amountInWords = GetChildValue(totals, "TgTTTBChu");
 
@@ -126,10 +158,10 @@ public class TT78XmlInvoiceParser : IStructuredInvoiceParser
         AddField(fields, FieldName.InvoiceForm, templateCode, "KHMSHDon");
         AddField(fields, FieldName.InvoiceSymbol, serial, "KHHDon");
         AddField(fields, FieldName.TaxAuthorityCode, taxAuthorityCode, "MCCQT");
-        AddField(fields, FieldName.InvoiceNature, NormalizeInvoiceNature(invoiceNatureCode), "TCHDon");
-        AddMoneyField(fields, FieldName.SubtotalAmount, subtotal, "TgTCThue");
-        AddMoneyField(fields, FieldName.VatAmount, vat, "TgTThue");
-        AddMoneyField(fields, FieldName.TotalAmount, total, "TgTTTBSo");
+        AddInvoiceNatureField(fields, invoiceNatureCode);
+        AddMoneyField(fields, FieldName.SubtotalAmount, subtotalResult);
+        AddMoneyField(fields, FieldName.VatAmount, vatResult);
+        AddMoneyField(fields, FieldName.TotalAmount, totalResult);
         // Profile-only field keys (see DocumentProfileCatalog's "amounts"/"invoice" sections) —
         // no dedicated FieldName enum value, so written directly by string key like the OCR
         // pipeline's "VatRate"/"DueDate"/"PONumber" candidates.
@@ -149,14 +181,16 @@ public class TT78XmlInvoiceParser : IStructuredInvoiceParser
 
         var taxBreakdown = ParseTaxBreakdown(totals);
 
-        return new StructuredInvoiceResult
+        return new StructuredExtractionResult
         {
             Success = true,
             Fields = fields,
             TaxBreakdown = taxBreakdown,
-            RawXml = rawXml,
+            RawSourceText = rawXml,
             InvoiceTemplateCode = templateCode,
-            InvoiceSerial = serial
+            InvoiceSerial = serial,
+            ProviderName = CreditPricing.StructuredXmlProviderName,
+            PageCount = 1
         };
     }
 
@@ -195,25 +229,20 @@ public class TT78XmlInvoiceParser : IStructuredInvoiceParser
     }
 
     /// <summary>
-    /// Best-effort numeric-code → label map for "TCHDon" (tính chất hoá đơn). Unverified against a
-    /// real sample (see the parsing note above) — passes non-numeric text through unchanged so an
-    /// unexpected real-world value is still visible to the user rather than silently dropped.
+    /// Numeric-code → label map for "TCHDon" (tính chất hoá đơn): 1=gốc, 2=thay thế, 3=điều
+    /// chỉnh, 4=huỷ. Passes any other value (including known codes outside this range, e.g. "5"
+    /// for chiết khấu thương mại per Quyết định 1306/QĐ-CT) through unchanged so it stays visible
+    /// to the user rather than being silently dropped or misclassified.
     /// </summary>
-    private static string? NormalizeInvoiceNature(string? rawValue)
-    {
-        if (string.IsNullOrWhiteSpace(rawValue)) return null;
-
-        return rawValue.Trim() switch
+    private static string NormalizeInvoiceNature(string rawValue) =>
+        rawValue.Trim() switch
         {
             "1" => "Hóa đơn gốc",
             "2" => "Hóa đơn thay thế",
             "3" => "Hóa đơn điều chỉnh",
-            "4" => "Hóa đơn bị thay thế",
-            "5" => "Hóa đơn bị điều chỉnh",
-            "6" => "Hóa đơn bị hủy",
+            "4" => "Hóa đơn huỷ",
             var other => other
         };
-    }
 
     private static readonly XmlReaderSettings SafeXmlReaderSettings = new()
     {
@@ -252,25 +281,102 @@ public class TT78XmlInvoiceParser : IStructuredInvoiceParser
     }
 
     /// <summary>
-    /// If the tag is present but its content isn't a valid decimal, this is treated the same as
-    /// the tag being absent: no field is added, rather than fabricating a zero value at full
-    /// confidence. See <see cref="TryParseInvariantMoney"/> for the parsing rationale.
+    /// Adds <see cref="FieldName.InvoiceNature"/> from the "TCHDon" tag when present. When absent,
+    /// still adds the field defaulted to "Hóa đơn gốc" (code 1) rather than leaving it unread, but
+    /// at reduced confidence and a distinct <see cref="ExtractedField.ExtractionMethod"/>
+    /// (<see cref="InferredDefaultMethod"/>) so it's clearly a guess, not a value read from the
+    /// XML — the reduced confidence also falls under FieldValidationService's low-confidence
+    /// threshold (0.75), so the existing LOW_CONFIDENCE warning surfaces it for the user to confirm.
     /// </summary>
-    private static void AddMoneyField(
-        List<ExtractedField> fields, FieldName fieldName, string? rawValue, string providerFieldName)
+    private static void AddInvoiceNatureField(List<ExtractedField> fields, string? rawValue)
     {
-        if (!TryParseInvariantMoney(rawValue, out var value))
+        if (!string.IsNullOrWhiteSpace(rawValue))
+        {
+            fields.Add(new ExtractedField
+            {
+                FieldName = nameof(FieldName.InvoiceNature),
+                RawValue = rawValue,
+                NormalizedValue = NormalizeInvoiceNature(rawValue),
+                Confidence = 1.0,
+                SourceType = ProviderFieldSource,
+                ExtractionMethod = ProviderFieldSource,
+                ProviderFieldName = "TCHDon"
+            });
+            return;
+        }
+
+        fields.Add(new ExtractedField
+        {
+            FieldName = nameof(FieldName.InvoiceNature),
+            RawValue = null,
+            NormalizedValue = NormalizeInvoiceNature("1"),
+            Confidence = 0.5,
+            SourceType = ProviderFieldSource,
+            ExtractionMethod = InferredDefaultMethod,
+            ProviderFieldName = null
+        });
+    }
+
+    /// <summary>Result of resolving one money field via <see cref="ResolveMoneyValue"/>.</summary>
+    private readonly record struct MoneyResolution(string? RawValue, string ProviderFieldName, bool IsExtension);
+
+    /// <summary>
+    /// TT78 standard tag first (direct child of <paramref name="totals"/>); only when that tag is
+    /// absent or blank does this fall back to a matching "TTKhac/TTin" whose "TTruong" name is one
+    /// of <paramref name="extensionNames"/> — provider-specific extension data (e.g. MISA's
+    /// "TotalAmountWithoutVAT"), never the TT78 standard itself. Logs a Warning on fallback so a
+    /// document relying on extension data is diagnosable later.
+    /// </summary>
+    private MoneyResolution ResolveMoneyValue(
+        XElement? totals, string standardTag, IReadOnlyList<string> extensionNames, string fieldNameForLog)
+    {
+        var standardValue = GetChildValue(totals, standardTag);
+        if (standardValue is not null)
+            return new MoneyResolution(standardValue, standardTag, IsExtension: false);
+
+        var ttKhac = totals?.Elements().FirstOrDefault(e => e.Name.LocalName == "TTKhac");
+        if (ttKhac is null)
+            return new MoneyResolution(null, standardTag, IsExtension: false);
+
+        foreach (var ttin in ttKhac.Elements().Where(e => e.Name.LocalName == "TTin"))
+        {
+            var ttruong = ttin.Elements().FirstOrDefault(c => c.Name.LocalName == "TTruong")?.Value?.Trim();
+            if (ttruong is null || !extensionNames.Contains(ttruong, StringComparer.OrdinalIgnoreCase))
+                continue;
+
+            var dLieu = ttin.Elements().FirstOrDefault(c => c.Name.LocalName == "DLieu")?.Value?.Trim();
+            if (string.IsNullOrWhiteSpace(dLieu))
+                continue;
+
+            _logger.LogWarning(
+                "TT78 XML: standard tag <{StandardTag}> missing for {FieldName}; falling back to TTKhac extension field {ExtensionFieldName}.",
+                standardTag, fieldNameForLog, ttruong);
+
+            return new MoneyResolution(dLieu, ttruong, IsExtension: true);
+        }
+
+        return new MoneyResolution(null, standardTag, IsExtension: false);
+    }
+
+    /// <summary>
+    /// If the resolved value isn't a valid decimal, this is treated the same as it being absent:
+    /// no field is added, rather than fabricating a zero value at full confidence. See
+    /// <see cref="TryParseInvariantMoney"/> for the parsing rationale.
+    /// </summary>
+    private static void AddMoneyField(List<ExtractedField> fields, FieldName fieldName, MoneyResolution resolution)
+    {
+        if (!TryParseInvariantMoney(resolution.RawValue, out var value))
             return;
 
         fields.Add(new ExtractedField
         {
             FieldName = fieldName.ToString(),
-            RawValue = rawValue,
+            RawValue = resolution.RawValue,
             NormalizedValue = value.ToString("0.####################", CultureInfo.InvariantCulture),
             Confidence = 1.0,
             SourceType = ProviderFieldSource,
-            ExtractionMethod = ProviderFieldSource,
-            ProviderFieldName = providerFieldName
+            ExtractionMethod = resolution.IsExtension ? ProviderFieldSource + ExtensionFallbackSuffix : ProviderFieldSource,
+            ProviderFieldName = resolution.ProviderFieldName
         });
     }
 
