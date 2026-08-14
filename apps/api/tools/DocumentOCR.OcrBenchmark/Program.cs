@@ -88,7 +88,9 @@ var llmStrategy = new PdfTextLayerLlmStrategy(
     new GeminiExtractionClient(Options.Create(llmOptions), loggerFactory.CreateLogger<GeminiExtractionClient>()),
     sharedNormalization,
     new NoOpLlmExtractionCache(),
+    new NoOpDocumentStorageService(),
     Options.Create(llmOptions),
+    Options.Create(new OcrOptions()),
     loggerFactory.CreateLogger<PdfTextLayerLlmStrategy>());
 
 if (!azureOptions.IsConfigured)

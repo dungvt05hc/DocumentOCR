@@ -80,6 +80,29 @@ public partial class FieldNormalizationService : IFieldNormalizationService
             }
         }
 
+        // Vietnamese textual date ("ngày 31 tháng 07 năm 2026") — the standard invoice-date wording
+        // on Vietnamese VAT invoices. Matched separately from DateFormats above because whitespace
+        // between the tokens is optional: a PDF's embedded text layer commonly renders adjacent
+        // glyphs without an actual space character (positioned by coordinates instead), producing
+        // raw text like "31tháng07năm2026" with no separators at all.
+        var vietnameseMatch = VietnameseTextualDatePattern().Match(trimmed);
+        if (vietnameseMatch.Success)
+        {
+            var day = vietnameseMatch.Groups["day"].Value.PadLeft(2, '0');
+            var month = vietnameseMatch.Groups["month"].Value.PadLeft(2, '0');
+            var year = vietnameseMatch.Groups["year"].Value;
+
+            if (DateOnly.TryParseExact(
+                    $"{day}/{month}/{year}",
+                    "dd/MM/yyyy",
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.None,
+                    out var vietnameseDate))
+            {
+                return vietnameseDate;
+            }
+        }
+
         return DateTime.TryParse(trimmed, CultureInfo.InvariantCulture, DateTimeStyles.None, out var dateTime)
             ? DateOnly.FromDateTime(dateTime)
             : null;
@@ -186,6 +209,9 @@ public partial class FieldNormalizationService : IFieldNormalizationService
 
     [GeneratedRegex(@"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{1,2}\.\d{1,2}\.\d{2,4}|\d{4}-\d{1,2}-\d{1,2}")]
     private static partial Regex DateValuePattern();
+
+    [GeneratedRegex(@"(?<day>\d{1,2})\s*tháng\s*(?<month>\d{1,2})\s*năm\s*(?<year>\d{4})", RegexOptions.IgnoreCase)]
+    private static partial Regex VietnameseTextualDatePattern();
 
     [GeneratedRegex(@"^\d{1,3}(\.\d{3})+,\d+$")]
     private static partial Regex EuropeanCurrencyPattern();

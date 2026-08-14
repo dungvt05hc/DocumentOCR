@@ -83,4 +83,14 @@ public sealed record LlmExtractionResult
     /// <summary>Not part of the model's JSON schema — populated by the client from the provider's response metadata.</summary>
     [JsonIgnore]
     public LlmUsage Usage { get; init; } = new(0, 0, 0m);
+
+    /// <summary>
+    /// The full raw HTTP response body from the provider's <c>generateContent</c> call — kept for
+    /// debugging only, mirrors <c>OcrResult.RawProviderResponseJson</c>. Not part of the model's
+    /// JSON schema, and never present on a cache hit (see <see cref="ILlmExtractionCache"/>'s own
+    /// JSON, which only round-trips the schema fields above): a cache hit means the provider was
+    /// never called on this run, so there is nothing raw to show for it.
+    /// </summary>
+    [JsonIgnore]
+    public string? RawResponseJson { get; init; }
 }

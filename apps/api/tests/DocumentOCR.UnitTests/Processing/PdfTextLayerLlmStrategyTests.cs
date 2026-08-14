@@ -3,6 +3,7 @@ using DocumentOCR.Application.Models;
 using DocumentOCR.Application.Processing;
 using DocumentOCR.Domain.Enums;
 using DocumentOCR.Infrastructure.Llm;
+using DocumentOCR.Infrastructure.Ocr;
 using DocumentOCR.Infrastructure.Processing;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -32,7 +33,12 @@ public class PdfTextLayerLlmStrategyTests
     };
 
     private static PdfTextLayerLlmStrategy CreateSut(
-        NormalizedOcrDocument textLayerResult, ILlmExtractionClient llmClient, LlmOptions? options = null, ILlmExtractionCache? cache = null)
+        NormalizedOcrDocument textLayerResult,
+        ILlmExtractionClient llmClient,
+        LlmOptions? options = null,
+        ILlmExtractionCache? cache = null,
+        IDocumentStorageService? storage = null,
+        OcrOptions? ocrOptions = null)
     {
         var provider = new RecordingOcrProvider(textLayerResult);
         return new PdfTextLayerLlmStrategy(
@@ -40,7 +46,9 @@ public class PdfTextLayerLlmStrategyTests
             llmClient,
             new FieldNormalizationService(),
             cache ?? new InMemoryLlmExtractionCache(),
+            storage ?? new RecordingDocumentStorageService(),
             Options.Create(options ?? new LlmOptions { Enabled = true, Model = "gemini-2.5-flash" }),
+            Options.Create(ocrOptions ?? new OcrOptions()),
             NullLogger<PdfTextLayerLlmStrategy>.Instance);
     }
 
@@ -57,7 +65,9 @@ public class PdfTextLayerLlmStrategyTests
         var provider = new RecordingOcrProvider(SuccessfulTextLayer());
         var sut = new PdfTextLayerLlmStrategy(
             provider, new StubLlmExtractionClient(_ => new LlmExtractionResult()), new FieldNormalizationService(),
-            new InMemoryLlmExtractionCache(), Options.Create(new LlmOptions { Enabled = false }), NullLogger<PdfTextLayerLlmStrategy>.Instance);
+            new InMemoryLlmExtractionCache(), new RecordingDocumentStorageService(),
+            Options.Create(new LlmOptions { Enabled = false }), Options.Create(new OcrOptions()),
+            NullLogger<PdfTextLayerLlmStrategy>.Instance);
 
         var canHandle = await sut.CanHandleAsync(MakeInput());
 
@@ -91,7 +101,9 @@ public class PdfTextLayerLlmStrategyTests
         var provider = new RecordingOcrProvider(SuccessfulTextLayer());
         var sut = new PdfTextLayerLlmStrategy(
             provider, new StubLlmExtractionClient(_ => new LlmExtractionResult()), new FieldNormalizationService(),
-            new InMemoryLlmExtractionCache(), Options.Create(new LlmOptions { Enabled = true }), NullLogger<PdfTextLayerLlmStrategy>.Instance);
+            new InMemoryLlmExtractionCache(), new RecordingDocumentStorageService(),
+            Options.Create(new LlmOptions { Enabled = true }), Options.Create(new OcrOptions()),
+            NullLogger<PdfTextLayerLlmStrategy>.Instance);
         var input = MakeInput();
 
         await sut.CanHandleAsync(input);
@@ -402,6 +414,86 @@ public class PdfTextLayerLlmStrategyTests
         Assert.False(result.Success);
     }
 
+    // ── ExtractAsync: raw response persistence ───────────────────────────────────
+
+    [Fact]
+    public async Task ExtractAsync_StoreRawProviderResponseEnabled_PersistsGeminiRawResponseAndSetsPath()
+    {
+        var llmResult = new LlmExtractionResult
+        {
+            SoHoaDon = new LlmFieldValue("00000947", "Số 00000947"),
+            RawResponseJson = """{"candidates":[{"content":{"parts":[{"text":"..."}]}}]}"""
+        };
+        var storage = new RecordingDocumentStorageService();
+        var sut = CreateSut(
+            SuccessfulTextLayer(), new StubLlmExtractionClient(_ => llmResult),
+            storage: storage, ocrOptions: new OcrOptions { StoreRawProviderResponse = true });
+
+        var result = await sut.ExtractAsync(MakeInput());
+
+        Assert.Equal(llmResult.RawResponseJson, result.RawResponseJson);
+        Assert.NotNull(result.RawResponsePath);
+        var saved = Assert.Single(storage.SavedFiles);
+        Assert.Equal(llmResult.RawResponseJson, saved.Content);
+        Assert.Equal("application/json", saved.ContentType);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_StoreRawProviderResponseDisabled_DoesNotPersistRawResponse()
+    {
+        var llmResult = new LlmExtractionResult
+        {
+            RawResponseJson = """{"candidates":[]}"""
+        };
+        var storage = new RecordingDocumentStorageService();
+        var sut = CreateSut(
+            SuccessfulTextLayer(), new StubLlmExtractionClient(_ => llmResult),
+            storage: storage, ocrOptions: new OcrOptions { StoreRawProviderResponse = false });
+
+        var result = await sut.ExtractAsync(MakeInput());
+
+        Assert.Null(result.RawResponseJson);
+        Assert.Null(result.RawResponsePath);
+        Assert.Empty(storage.SavedFiles);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_CacheHit_HasNoRawResponseToPersist()
+    {
+        // A cache hit means Gemini was never called on this run -- there is no raw response body
+        // for this attempt, so nothing gets written to storage even though StoreRawProviderResponse
+        // is on.
+        var cache = new InMemoryLlmExtractionCache();
+        var llmClient = new StubLlmExtractionClient(_ => new LlmExtractionResult
+        {
+            SoHoaDon = new LlmFieldValue("00000947", "Số 00000947"),
+            RawResponseJson = """{"candidates":[]}"""
+        });
+        var options = new LlmOptions { Enabled = true, Model = "gemini-2.5-flash" };
+        var storage = new RecordingDocumentStorageService();
+
+        await CreateSut(SuccessfulTextLayer(), llmClient, options, cache).ExtractAsync(MakeInput());
+
+        var result = await CreateSut(
+            SuccessfulTextLayer(), llmClient, options, cache, storage,
+            new OcrOptions { StoreRawProviderResponse = true }).ExtractAsync(MakeInput());
+
+        Assert.Null(result.RawResponseJson);
+        Assert.Null(result.RawResponsePath);
+        Assert.Empty(storage.SavedFiles);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_LlmCallTakesMeasurableTime_ReportsProcessingTime()
+    {
+        var llmClient = new DelayingLlmExtractionClient(TimeSpan.FromMilliseconds(20), new LlmExtractionResult());
+        var sut = CreateSut(SuccessfulTextLayer(), llmClient);
+
+        var result = await sut.ExtractAsync(MakeInput());
+
+        Assert.True(result.ProcessingTimeMs >= 20, $"Expected ProcessingTimeMs >= 20, was {result.ProcessingTimeMs}");
+    }
+
     // ── ExtractAsync: response cache ─────────────────────────────────────────────
 
     [Fact]
@@ -498,6 +590,34 @@ public class PdfTextLayerLlmStrategyTests
             CallCount++;
             return Task.FromResult(handle(documentText));
         }
+    }
+
+    private sealed class DelayingLlmExtractionClient(TimeSpan delay, LlmExtractionResult result) : ILlmExtractionClient
+    {
+        public async Task<LlmExtractionResult> ExtractAsync(string documentText, CancellationToken ct = default)
+        {
+            await Task.Delay(delay, ct);
+            return result;
+        }
+    }
+
+    private sealed class RecordingDocumentStorageService : IDocumentStorageService
+    {
+        public List<(string FileName, string ContentType, string Content)> SavedFiles { get; } = [];
+
+        public Task<string> SaveAsync(Stream fileStream, string originalFileName, string contentType, CancellationToken ct = default)
+        {
+            using var reader = new StreamReader(fileStream);
+            var content = reader.ReadToEnd();
+            SavedFiles.Add((originalFileName, contentType, content));
+            return Task.FromResult($"fake/{originalFileName}");
+        }
+
+        public Task<Stream> GetStreamAsync(string storedPath, CancellationToken ct = default) =>
+            throw new NotSupportedException("Not used by PdfTextLayerLlmStrategy.");
+
+        public Task DeleteAsync(string storedPath, CancellationToken ct = default) =>
+            throw new NotSupportedException("Not used by PdfTextLayerLlmStrategy.");
     }
 
     private sealed class InMemoryLlmExtractionCache : ILlmExtractionCache

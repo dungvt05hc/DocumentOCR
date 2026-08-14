@@ -86,6 +86,7 @@ public static class DependencyInjection
 
         services.AddSingleton<ILlmExtractionClient, GeminiExtractionClient>();
         services.AddScoped<ILlmExtractionCache, LlmExtractionCacheService>();
+        services.AddHostedService<LlmStartupWarningService>();
 
         // ── Document review profiles ────────────────────────────────────────────
         // Pure static data, no per-request state — safe (and cheap) as a singleton.
@@ -121,7 +122,9 @@ public static class DependencyInjection
             sp.GetRequiredService<ILlmExtractionClient>(),
             sp.GetRequiredService<IFieldNormalizationService>(),
             sp.GetRequiredService<ILlmExtractionCache>(),
+            sp.GetRequiredService<IDocumentStorageService>(),
             sp.GetRequiredService<IOptions<LlmOptions>>(),
+            sp.GetRequiredService<IOptions<OcrOptions>>(),
             sp.GetRequiredService<ILogger<PdfTextLayerLlmStrategy>>()));
 
         services.AddScoped<IDocumentExtractionStrategy, OcrStrategy>();

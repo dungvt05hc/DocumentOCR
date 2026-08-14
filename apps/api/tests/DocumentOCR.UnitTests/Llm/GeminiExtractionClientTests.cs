@@ -162,6 +162,78 @@ public class GeminiExtractionClientTests
         Assert.Equal(10, userText!.Length);
     }
 
+    // ── Rate limiting (429) ──────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task ExtractAsync_RateLimitedOnce_RetriesAndSucceeds()
+    {
+        var callCount = 0;
+        var sut = CreateSut(
+            new StubHandler((_, _) =>
+            {
+                callCount++;
+                var response = callCount == 1
+                    ? new HttpResponseMessage(HttpStatusCode.TooManyRequests)
+                    : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(WrapCandidateJson("{}")) };
+                return Task.FromResult(response);
+            }),
+            MakeOptions(o => o.RetryDelaysSeconds = [0.01, 0.01, 0.01]));
+
+        await sut.ExtractAsync("text");
+
+        Assert.Equal(2, callCount);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_RateLimitedBeyondConfiguredRetries_ThrowsAfterExhaustingRetries()
+    {
+        var callCount = 0;
+        var sut = CreateSut(
+            new StubHandler((_, _) =>
+            {
+                callCount++;
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.TooManyRequests));
+            }),
+            MakeOptions(o => o.RetryDelaysSeconds = [0.01, 0.01, 0.01]));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => sut.ExtractAsync("text"));
+
+        // 1 initial attempt + 3 retries = 4 total calls.
+        Assert.Equal(4, callCount);
+    }
+
+    // ── Concurrency limiting ─────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task ExtractAsync_MaxConcurrencyTwo_NeverRunsMoreThanTwoRequestsAtOnce()
+    {
+        var gate = new object();
+        var current = 0;
+        var maxObserved = 0;
+
+        var sut = CreateSut(
+            new StubHandler(async (_, ct) =>
+            {
+                lock (gate)
+                {
+                    current++;
+                    maxObserved = Math.Max(maxObserved, current);
+                }
+
+                await Task.Delay(50, ct);
+
+                lock (gate) { current--; }
+
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(WrapCandidateJson("{}")) };
+            }),
+            MakeOptions(o => o.MaxConcurrency = 2));
+
+        var tasks = Enumerable.Range(0, 5).Select(_ => sut.ExtractAsync("text"));
+        await Task.WhenAll(tasks);
+
+        Assert.True(maxObserved <= 2, $"Observed {maxObserved} concurrent Gemini requests, expected at most 2.");
+    }
+
     // ── Failure modes ────────────────────────────────────────────────────────────
 
     [Fact]

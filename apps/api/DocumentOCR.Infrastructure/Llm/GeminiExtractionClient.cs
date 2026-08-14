@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -28,11 +29,19 @@ public sealed class GeminiExtractionClient : ILlmExtractionClient
     /// <summary>Lazily-initialized client — a missing API key must not crash the app when the LLM path is disabled.</summary>
     private readonly Lazy<HttpClient?> _client;
 
+    /// <summary>
+    /// Bounds concurrent Gemini calls to <see cref="LlmOptions.MaxConcurrency"/> across every
+    /// caller sharing this singleton — the free tier's ~5-15 requests/minute limit means a batch of
+    /// documents processing at once must be throttled here, not left to hit 429s individually.
+    /// </summary>
+    private readonly SemaphoreSlim _concurrencyGate;
+
     public GeminiExtractionClient(IOptions<LlmOptions> options, ILogger<GeminiExtractionClient> logger)
     {
         _options = options.Value;
         _logger = logger;
         _client = new Lazy<HttpClient?>(BuildClient, isThreadSafe: true);
+        _concurrencyGate = new SemaphoreSlim(Math.Max(1, _options.MaxConcurrency));
     }
 
     /// <summary>Test-only seam: injects a pre-built <see cref="HttpClient"/> (wrapping a stub handler) instead of building one from options.</summary>
@@ -41,6 +50,7 @@ public sealed class GeminiExtractionClient : ILlmExtractionClient
         _options = options.Value;
         _logger = logger;
         _client = new Lazy<HttpClient?>(() => httpClient, isThreadSafe: true);
+        _concurrencyGate = new SemaphoreSlim(Math.Max(1, _options.MaxConcurrency));
     }
 
     public async Task<LlmExtractionResult> ExtractAsync(string documentText, CancellationToken ct = default)
@@ -50,65 +60,114 @@ public sealed class GeminiExtractionClient : ILlmExtractionClient
 
         var truncatedText = TruncateIfNeeded(documentText);
         var requestBody = BuildRequestBody(truncatedText);
-
-        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(_options.TimeoutSeconds));
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
-
-        var sw = Stopwatch.StartNew();
         var url = $"v1beta/models/{Uri.EscapeDataString(_options.Model)}:generateContent?key={Uri.EscapeDataString(_options.ApiKey)}";
 
-        using var content = new StringContent(requestBody.ToJsonString(), Encoding.UTF8, "application/json");
-
-        HttpResponseMessage response;
+        await _concurrencyGate.WaitAsync(ct);
         try
         {
-            response = await client.PostAsync(url, content, linkedCts.Token);
+            return await SendWithRetryAsync(client, url, requestBody, ct);
         }
-        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+        finally
         {
-            throw new TimeoutException($"Gemini extraction call timed out after {_options.TimeoutSeconds}s.");
+            _concurrencyGate.Release();
         }
+    }
 
-        using (response)
+    /// <summary>
+    /// Retries only on HTTP 429 (rate limited) — <see cref="LlmOptions.RetryDelaysSeconds"/> in
+    /// order, one retry per entry (default 2s/5s/10s = 3 retries). Any other failure (non-429 HTTP
+    /// error, timeout, malformed response) is thrown immediately with no retry, same as before.
+    /// Exhausting retries throws — <c>PdfTextLayerLlmStrategy</c> catches this and falls through to
+    /// <c>OcrStrategy</c>, so a document can never get stuck in <c>Processing</c> because Gemini is
+    /// rate-limited.
+    /// </summary>
+    private async Task<LlmExtractionResult> SendWithRetryAsync(HttpClient client, string url, JsonObject requestBody, CancellationToken ct)
+    {
+        var totalAttempts = _options.RetryDelaysSeconds.Length + 1;
+
+        for (var attempt = 1; attempt <= totalAttempts; attempt++)
         {
-            var rawJson = await response.Content.ReadAsStringAsync(linkedCts.Token);
-            sw.Stop();
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(_options.TimeoutSeconds));
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
 
-            if (!response.IsSuccessStatusCode)
+            var sw = Stopwatch.StartNew();
+            using var content = new StringContent(requestBody.ToJsonString(), Encoding.UTF8, "application/json");
+
+            HttpResponseMessage response;
+            try
             {
-                _logger.LogError(
-                    "Gemini API returned HTTP {StatusCode} in {ElapsedMs}ms.",
-                    (int)response.StatusCode, sw.Elapsed.TotalMilliseconds);
-                throw new InvalidOperationException($"Gemini API returned HTTP {(int)response.StatusCode} ({response.StatusCode}).");
+                response = await client.PostAsync(url, content, linkedCts.Token);
+            }
+            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+            {
+                throw new TimeoutException($"Gemini extraction call timed out after {_options.TimeoutSeconds}s.");
             }
 
-            using var responseDoc = JsonDocument.Parse(rawJson);
-            var root = responseDoc.RootElement;
-
-            var candidateText = root
-                .GetProperty("candidates")[0]
-                .GetProperty("content")
-                .GetProperty("parts")[0]
-                .GetProperty("text")
-                .GetString();
-
-            if (string.IsNullOrWhiteSpace(candidateText))
-                throw new InvalidOperationException("Gemini response did not contain any candidate text.");
-
-            var result = JsonSerializer.Deserialize<LlmExtractionResult>(candidateText, JsonOptions)
-                ?? throw new InvalidOperationException("Failed to deserialize Gemini's structured JSON output.");
-
-            var (inputTokens, outputTokens) = ReadUsage(root);
-
-            _logger.LogInformation(
-                "Gemini extraction completed. Model={Model} InputTokens={InputTokens} OutputTokens={OutputTokens} ElapsedMs={ElapsedMs}",
-                _options.Model, inputTokens, outputTokens, sw.Elapsed.TotalMilliseconds);
-
-            return result with
+            using (response)
             {
-                Usage = new LlmUsage(inputTokens, outputTokens, EstimateCostUsd(inputTokens, outputTokens))
-            };
+                if (response.StatusCode == HttpStatusCode.TooManyRequests)
+                {
+                    var isLastAttempt = attempt == totalAttempts;
+                    if (isLastAttempt)
+                    {
+                        _logger.LogError(
+                            "Gemini API rate limit (HTTP 429) exceeded after {Retries} retries; falling back to OCR strategy.",
+                            _options.RetryDelaysSeconds.Length);
+                        throw new InvalidOperationException(
+                            $"Gemini API rate limit (HTTP 429) exceeded after {_options.RetryDelaysSeconds.Length} retries.");
+                    }
+
+                    var delaySeconds = _options.RetryDelaysSeconds[attempt - 1];
+                    _logger.LogWarning(
+                        "Gemini API rate limited (HTTP 429) on attempt {Attempt}/{TotalAttempts}; retrying in {DelaySeconds}s.",
+                        attempt, totalAttempts, delaySeconds);
+                    await Task.Delay(TimeSpan.FromSeconds(delaySeconds), ct);
+                    continue;
+                }
+
+                var rawJson = await response.Content.ReadAsStringAsync(linkedCts.Token);
+                sw.Stop();
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    _logger.LogError(
+                        "Gemini API returned HTTP {StatusCode} in {ElapsedMs}ms.",
+                        (int)response.StatusCode, sw.Elapsed.TotalMilliseconds);
+                    throw new InvalidOperationException($"Gemini API returned HTTP {(int)response.StatusCode} ({response.StatusCode}).");
+                }
+
+                using var responseDoc = JsonDocument.Parse(rawJson);
+                var root = responseDoc.RootElement;
+
+                var candidateText = root
+                    .GetProperty("candidates")[0]
+                    .GetProperty("content")
+                    .GetProperty("parts")[0]
+                    .GetProperty("text")
+                    .GetString();
+
+                if (string.IsNullOrWhiteSpace(candidateText))
+                    throw new InvalidOperationException("Gemini response did not contain any candidate text.");
+
+                var result = JsonSerializer.Deserialize<LlmExtractionResult>(candidateText, JsonOptions)
+                    ?? throw new InvalidOperationException("Failed to deserialize Gemini's structured JSON output.");
+
+                var (inputTokens, outputTokens) = ReadUsage(root);
+
+                _logger.LogInformation(
+                    "Gemini extraction completed. Model={Model} InputTokens={InputTokens} OutputTokens={OutputTokens} ElapsedMs={ElapsedMs}",
+                    _options.Model, inputTokens, outputTokens, sw.Elapsed.TotalMilliseconds);
+
+                return result with
+                {
+                    Usage = new LlmUsage(inputTokens, outputTokens, EstimateCostUsd(inputTokens, outputTokens)),
+                    RawResponseJson = rawJson
+                };
+            }
         }
+
+        // Unreachable — the loop above always either returns or throws.
+        throw new InvalidOperationException("Gemini extraction retry loop exited without a result.");
     }
 
     private string TruncateIfNeeded(string documentText)

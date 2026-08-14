@@ -31,6 +31,14 @@ public class DateNormalizationTests
     // handles the bare "dd-MMM-yyyy" shape fine, but not with a label prefix still attached.
     [InlineData("20-Mar-2008", 2008, 3, 20)]
     [InlineData("16-Oct-2016", 2016, 10, 16)]
+    // Vietnamese textual date ("ngày X tháng Y năm Z") — the standard invoice-date wording.
+    // No-space variant matches a PDF text layer that drops spaces between coordinate-positioned
+    // glyphs (see the screenshot bug this covers: "31tháng07năm2026" from a real MISA e-invoice).
+    [InlineData("31tháng07năm2026", 2026, 7, 31)]
+    [InlineData("31 tháng 07 năm 2026", 2026, 7, 31)]
+    [InlineData("Ngày 31 tháng 07 năm 2026", 2026, 7, 31)]
+    [InlineData("ngày 5 tháng 6 năm 2026", 2026, 6, 5)]
+    [InlineData("Ngày 05 Tháng 06 Năm 2026", 2026, 6, 5)]
     public void NormalizeDate_ValidFormats_ReturnsParsedDate(
         string input, int year, int month, int day)
     {
@@ -47,6 +55,8 @@ public class DateNormalizationTests
     [InlineData("   ")]
     [InlineData("not-a-date")]
     [InlineData("99/99/9999")]
+    [InlineData("31 tháng 13 năm 2026")]
+    [InlineData("31 tháng 02 năm 2026")]
     public void NormalizeDate_InvalidOrEmpty_ReturnsNull(string? input)
     {
         var result = _sut.NormalizeDate(input);

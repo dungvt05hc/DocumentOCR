@@ -50,7 +50,7 @@ Single-tenant: `DocumentsController` hardcodes `DefaultOrganizationId`. Intentio
 ## Normalization rules
 
 - **SupplierTaxCode** — digits only, 10 or 13 digits, fix O → 0 in numeric context
-- **InvoiceDate** — ISO output; accept `dd/MM/yyyy`, `d/M/yyyy`, `dd-MM-yyyy`, `yyyy-MM-dd`; reject far-future
+- **InvoiceDate** — ISO output; accept `dd/MM/yyyy`, `d/M/yyyy`, `dd-MM-yyyy`, `yyyy-MM-dd`, and the Vietnamese textual form "ngày D tháng M năm YYYY" (spaces between tokens optional — a PDF text layer commonly drops them); reject far-future
 - **Money** — `1.234.567` / `1,234,567` / `1 234 567` / `… VND` / `₫…`
 - **TotalAmount** — required, positive. Subtotal + VAT ≈ Total (allow rounding)
 - `ExtractedField` keeps `RawValue` and `NormalizedValue` separate always; preserve confidence

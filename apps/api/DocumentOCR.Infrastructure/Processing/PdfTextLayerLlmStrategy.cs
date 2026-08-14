@@ -60,7 +60,9 @@ public sealed class PdfTextLayerLlmStrategy : IDocumentExtractionStrategy
     private readonly ILlmExtractionClient _llmClient;
     private readonly IFieldNormalizationService _normalization;
     private readonly ILlmExtractionCache _cache;
+    private readonly IDocumentStorageService _storage;
     private readonly LlmOptions _options;
+    private readonly OcrOptions _ocrOptions;
     private readonly ILogger<PdfTextLayerLlmStrategy> _logger;
 
     private NormalizedOcrDocument? _textLayerResult;
@@ -74,14 +76,18 @@ public sealed class PdfTextLayerLlmStrategy : IDocumentExtractionStrategy
         ILlmExtractionClient llmClient,
         IFieldNormalizationService normalization,
         ILlmExtractionCache cache,
+        IDocumentStorageService storage,
         IOptions<LlmOptions> options,
+        IOptions<OcrOptions> ocrOptions,
         ILogger<PdfTextLayerLlmStrategy> logger)
     {
         _pdfTextLayerProvider = pdfTextLayerProvider;
         _llmClient = llmClient;
         _normalization = normalization;
         _cache = cache;
+        _storage = storage;
         _options = options.Value;
+        _ocrOptions = ocrOptions.Value;
         _logger = logger;
     }
 
@@ -106,6 +112,8 @@ public sealed class PdfTextLayerLlmStrategy : IDocumentExtractionStrategy
 
     public async Task<StructuredExtractionResult> ExtractAsync(DocumentInput input, CancellationToken ct = default)
     {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
         var textLayer = await ReadTextLayerAsync(input, ct);
         if (!textLayer.Success)
         {
@@ -135,6 +143,8 @@ public sealed class PdfTextLayerLlmStrategy : IDocumentExtractionStrategy
         {
             _logger.LogInformation("LLM extraction cache hit for text hash {TextHash}.", textHash);
         }
+
+        var (rawResponseJson, rawResponsePath) = await PersistRawResponseAsync(llmResult, ct);
 
         var fields = new List<ExtractedField>();
         var rejectedFieldCount = 0;
@@ -183,9 +193,32 @@ public sealed class PdfTextLayerLlmStrategy : IDocumentExtractionStrategy
             ProviderName = ProviderName,
             ModelId = _options.Model,
             PageCount = textLayer.PageCount,
+            ProcessingTimeMs = sw.Elapsed.TotalMilliseconds,
             EstimatedCost = llmResult.Usage.EstimatedCostUsd,
-            RejectedFieldCount = rejectedFieldCount
+            RejectedFieldCount = rejectedFieldCount,
+            RawResponseJson = rawResponseJson,
+            RawResponsePath = rawResponsePath
         };
+    }
+
+    /// <summary>
+    /// Writes Gemini's raw <c>generateContent</c> response to storage, mirroring
+    /// <c>OcrStrategy</c>'s handling of <c>Ocr:StoreRawProviderResponse</c> for the Azure/Paddle
+    /// path — same config flag, same "debugging only, never business logic" purpose, so
+    /// <c>GET /api/documents/{id}/ocr-debug</c> and <c>OcrProviderLog</c> work identically
+    /// regardless of which extraction strategy actually ran. A cache hit has no raw response to
+    /// persist (see <see cref="LlmExtractionResult.RawResponseJson"/>'s remarks) — this is a no-op
+    /// in that case, not an error.
+    /// </summary>
+    private async Task<(string? RawResponseJson, string? RawResponsePath)> PersistRawResponseAsync(LlmExtractionResult llmResult, CancellationToken ct)
+    {
+        if (!_ocrOptions.StoreRawProviderResponse || string.IsNullOrWhiteSpace(llmResult.RawResponseJson))
+            return (null, null);
+
+        using var stream = new MemoryStream(Encoding.UTF8.GetBytes(llmResult.RawResponseJson));
+        var path = await _storage.SaveAsync(stream, $"{Guid.NewGuid()}-gemini-raw-response.json", "application/json", ct);
+
+        return (llmResult.RawResponseJson, path);
     }
 
     // ── Field verification + confidence ─────────────────────────────────────────

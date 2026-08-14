@@ -37,7 +37,8 @@ public static class LlmPromptBuilder
         - mauSo (mẫu số hoá đơn): a short standalone number, sometimes written "Mẫu số <n>". Found
           near "kyHieu", in the header block.
         - kyHieu (ký hiệu hoá đơn): an alphanumeric code such as "1C26TNH" or "1C25TBP", after the
-          label "Ký hiệu" / "Serial", in the same header area as "soHoaDon".
+          label "Ký hiệu" / "Serial", in the same header area as "soHoaDon" — usually near the
+          top-right corner of the page.
         - soHoaDon (số hoá đơn): after the label "Số" / "Số (No.)", in the SAME header block as
           "kyHieu". Often a zero-padded number (e.g. "00000947"). NEVER take this from a line
           labeled "Số tài khoản" / "A/C No." — that is a bank account number, not an invoice number.

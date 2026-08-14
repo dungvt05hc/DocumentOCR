@@ -276,6 +276,65 @@ it doesn't care how the service is implemented internally.
 
 ---
 
+## Configuring the LLM extraction path (Gemini)
+
+For software-generated PDFs, `PdfTextLayerLlmStrategy` can read the PDF's text layer and hand it
+to Gemini for field extraction instead of (or before falling back to) the OCR path — see the
+2026-08-13 entry in [docs/decisions.md](docs/decisions.md). Off by default (`Llm:Enabled=false`);
+no external calls or cost until explicitly turned on.
+
+### Set up an API key
+
+```bash
+cd apps/api/DocumentOCR.WebApi
+
+dotnet user-secrets init
+dotnet user-secrets set "Llm:ApiKey" "<your-gemini-api-key>"
+dotnet user-secrets set "Llm:Enabled" "true"
+```
+
+Or via environment variable:
+```bash
+export Llm__ApiKey="<your-gemini-api-key>"
+export Llm__Enabled="true"
+```
+
+### Configuration
+
+```json
+"Llm": {
+  "Enabled": false,
+  "Provider": "Gemini",
+  "Model": "gemini-3.5-flash-lite",
+  "Tier": "Free",
+  "MaxConcurrency": 2,
+  "RetryDelaysSeconds": [2, 5, 10]
+}
+```
+
+| Setting | Default | Notes |
+|---|---|---|
+| `Model` | `gemini-3.5-flash-lite` | If unavailable for your API key/region, set to `gemini-3.1-flash-lite`. Never use `gemini-2.5-flash-lite` — Google ends support for it 2026-10-16. |
+| `Tier` | `Free` | `Free` or `Paid`. While `Free` and `Enabled`, the app logs a startup Warning that submitted content may be used by the provider to improve their product — only use the free tier for test data, never real customer documents. Set to `Paid` once billing is enabled. |
+| `MaxConcurrency` | `2` | Caps concurrent Gemini requests across all in-flight processing jobs — keeps a batch of documents from blowing through the free tier's ~5-15 requests/minute limit. |
+| `RetryDelaysSeconds` | `[2, 5, 10]` | On HTTP 429 (rate limited), retries with these backoff delays (one retry per entry). If all retries are also rate limited, the strategy falls through to `OcrStrategy` — a document is never left stuck in `Processing` because Gemini is rate limited. |
+
+Every response is verified against the source PDF text before being trusted (see
+`PdfTextLayerLlmStrategy`) and it always uses `temperature = 0` with Gemini's native
+`responseSchema`/`responseMimeType: application/json` structured output — never a "reply with
+JSON" prompt parsed by hand.
+
+### Manual test
+
+1. Set `Llm:ApiKey`/`Llm:Enabled` (above).
+2. Start Postgres and the API.
+3. Upload a software-generated Vietnamese VAT-invoice PDF (not a scan).
+4. Watch the log for `Gemini extraction completed. Model=...` and confirm the document reaches
+   `Processed` with plausible field values.
+5. Set `Llm:Enabled` back to `false` when done, so subsequent local runs don't call Gemini.
+
+---
+
 ## OCR Benchmark Tool (dev-only)
 
 `apps/api/tools/DocumentOCR.OcrBenchmark` is a console app that runs `FakeOcrProvider`,

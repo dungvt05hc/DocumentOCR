@@ -539,7 +539,9 @@ public class DocumentProcessingServiceTests
             new ThrowingLlmExtractionClient(),
             normalization,
             new NoOpLlmExtractionCache(),
+            storage,
             Options.Create(new LlmOptions { Enabled = true, Model = "gemini-2.5-flash" }),
+            options,
             NullLogger<PdfTextLayerLlmStrategy>.Instance);
 
         IDocumentExtractionStrategy[] strategies =
